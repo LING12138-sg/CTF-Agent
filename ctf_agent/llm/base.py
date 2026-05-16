@@ -97,6 +97,69 @@ class LLMBase:
         if env:
             self._env.update(env)
 
+        # 持久会话支持
+        self._persistent_client: Optional[ClaudeSDKClient] = None
+        self._persistent_session_active = False
+
+    # ── 持久会话管理 ──
+
+    async def open_session(self, system_prompt: Optional[str] = None):
+        """打开持久会话（客户端保持连接，支持多轮对话）
+
+        Args:
+            system_prompt: 可选的 system prompt 覆盖
+        """
+        await self.close_session()  # 清理旧连接
+        options = self._build_options(system_override=system_prompt)
+        self._persistent_client = ClaudeSDKClient(options=options)
+        await self._persistent_client.__aenter__()
+        self._persistent_session_active = True
+        log_system_event(f"{self._tag} 持久会话已建立")
+        return self
+
+    async def close_session(self):
+        """关闭持久会话"""
+        if self._persistent_client is not None:
+            try:
+                await self._persistent_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._persistent_client = None
+            self._persistent_session_active = False
+            log_system_event(f"{self._tag} 持久会话已关闭")
+
+    async def session_send(
+        self,
+        prompt: str,
+        output_format: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """在持久会话中发送消息并等待完整响应
+
+        Args:
+            prompt: 用户消息
+            output_format: JSON Schema（可选，用于结构化输出）
+
+        Returns:
+            {"text": str, "structured": dict | None}
+        """
+        if not self._persistent_client or not self._persistent_session_active:
+            raise RuntimeError("没有活跃的持久会话，请先调用 open_session()")
+
+        log_system_event(
+            f"{self._tag} session_send | prompt_len={len(prompt)}"
+        )
+
+        if self.log_file:
+            self._write()
+            self._write_block(
+                f">>> [{self.agent_label or 'LLM'}] session_send"
+            )
+
+        await self._persistent_client.query(prompt)
+        return await self._process_stream(
+            self._persistent_client, output_format=output_format
+        )
+
     # ── 文件日志输出 ──
 
     def _write(self, text: str = ""):
@@ -200,13 +263,89 @@ class LLMBase:
 
     # ── 执行方法 ──
 
+    async def _process_stream(
+        self,
+        client: ClaudeSDKClient,
+        output_format: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """处理响应流，提取文本、工具调用、结构化数据
+
+        Args:
+            client: ClaudeSDKClient 实例（已 query 过的）
+            output_format: JSON Schema（可选）
+
+        Returns:
+            {"text": str, "structured": dict | None}
+        """
+        text_parts: List[str] = []
+        structured_data = None
+
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        if self.log_file:
+                            self._write_stream(block.text)
+                        text_parts.append(block.text)
+                    elif isinstance(block, ThinkingBlock):
+                        if self.log_file and block.thinking.strip():
+                            self._write_stream(
+                                f"\n--- THINK {block.thinking[:500]}...\n"
+                            )
+                    elif isinstance(block, ToolUseBlock):
+                        if block.name == "StructuredOutput" and isinstance(block.input, dict):
+                            structured_data = block.input
+                        text_parts.append(f"[TOOL_CALL: {block.name}]")
+                        if self.log_file:
+                            self._write_tool_call(block.name, block.input)
+
+            elif isinstance(msg, UserMessage):
+                if self.log_file and isinstance(msg.content, list):
+                    for item in msg.content:
+                        if isinstance(item, ToolResultBlock):
+                            self._write_tool_result(item.content, item.is_error)
+
+            elif isinstance(msg, ResultMessage):
+                if self.log_file:
+                    if msg.is_error:
+                        self._write(
+                            f"\n[ERR] [{self.agent_label or 'LLM'}] "
+                            f"错误: {msg.error_message or msg.result}"
+                        )
+                    else:
+                        cost = msg.total_cost_usd
+                        cost_str = f"(${cost:.4f})" if cost is not None else ""
+                        tools_count = self._count_tool_calls(text_parts)
+                        self._write(f"\n[OK] [{self.agent_label or 'LLM'}] 完成 {cost_str}")
+
+                # 尝试从 ResultMessage 提取结构化输出
+                if structured_data is None:
+                    if hasattr(msg, 'structured_output') and msg.structured_output is not None:
+                        structured_data = msg.structured_output
+                    elif msg.result:
+                        try:
+                            parsed = json.loads(msg.result)
+                            if isinstance(parsed, dict):
+                                structured_data = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                if msg.is_error:
+                    log_system_event(
+                        f"{self._tag} LLM 执行错误",
+                        msg.error_message or msg.result or "未知",
+                        level=logging.WARNING,
+                    )
+                break
+
+        return {"text": "".join(text_parts), "structured": structured_data}
+
     async def execute(
         self, prompt: str, system_prompt: Optional[str] = None
     ) -> str:
-        """一次性文本执行
+        """一次性文本执行（自动开/关会话）
 
         创建临时会话 → 发送 prompt → 收集文本响应 → 自动断开。
-        如果配置了 log_file，会将 LLM 的思考、工具调用、结果实时写入文件。
 
         Args:
             prompt: 用户提示词
@@ -215,83 +354,12 @@ class LLMBase:
         Returns:
             LLM 文本响应
         """
-        options = self._build_options(system_override=system_prompt)
-        log_system_event(f"{self._tag} LLMBase execute | prompt_len={len(prompt)}")
-
-        if self.log_file:
-            self._write()
-            self._write_block(f">>> [{self.agent_label or 'LLM'}] 开始执行")
-
+        await self.open_session(system_prompt=system_prompt)
         try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
-                text_parts: List[str] = []
-
-                async for msg in client.receive_response():
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                if self.log_file:
-                                    self._write_stream(block.text)
-                                text_parts.append(block.text)
-                            elif isinstance(block, ThinkingBlock):
-                                if self.log_file and block.thinking.strip():
-                                    self._write_stream(
-                                        f"\n--- THINK {block.thinking[:500]}...\n"
-                                    )
-                            elif isinstance(block, ToolUseBlock):
-                                text_parts.append(
-                                    f"[TOOL_CALL: {block.name}]"
-                                )
-                                if self.log_file:
-                                    self._write_tool_call(block.name, block.input)
-
-                    elif isinstance(msg, UserMessage):
-                        if self.log_file and isinstance(msg.content, list):
-                            for item in msg.content:
-                                if isinstance(item, ToolResultBlock):
-                                    self._write_tool_result(
-                                        item.content, item.is_error
-                                    )
-
-                    elif isinstance(msg, ResultMessage):
-                        if self.log_file:
-                            if msg.is_error:
-                                self._write(
-                                    f"\n[ERR] [{self.agent_label or 'LLM'}] "
-                                    f"错误: {msg.error_message or msg.result}"
-                                )
-                            else:
-                                cost = msg.total_cost_usd
-                                cost_str = (
-                                    f"(${cost:.4f})" if cost is not None else ""
-                                )
-                                tools_count = self._count_tool_calls(text_parts)
-                                self._write(
-                                    f"\n[OK] [{self.agent_label or 'LLM'}] "
-                                    f"完成 {cost_str}"
-                                )
-                        if msg.is_error:
-                            log_system_event(
-                                f"{self._tag} LLM 执行错误",
-                                msg.error_message or msg.result or "未知",
-                                level=logging.WARNING,
-                            )
-                        break
-
-                result = "".join(text_parts)
-                log_system_event(
-                    f"{self._tag} LLMBase 完成 | response_len={len(result)}"
-                )
-                return result
-
-        except Exception as e:
-            log_system_event(
-                f"{self._tag} LLMBase 异常", str(e), level=logging.ERROR
-            )
-            if self.log_file:
-                self._write(f"\n[ERR] [{self.agent_label or 'LLM'}] 异常: {e}")
-            raise
+            result = await self.session_send(prompt)
+            return result["text"]
+        finally:
+            await self.close_session()
 
     def _count_tool_calls(self, text_parts: List[str]) -> int:
         """统计文本中的工具调用标记数量"""
@@ -305,7 +373,9 @@ class LLMBase:
         output_format: Optional[Dict[str, Any]] = None,
         system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """一次性结构化输出执行
+        """一次性结构化输出执行（自动开/关会话）
+
+        创建临时会话 → 发送 prompt（结构化 schema） → 收集响应 → 自动断开。
 
         Args:
             prompt: 用户提示词
@@ -315,83 +385,20 @@ class LLMBase:
         Returns:
             {"text": str, "structured": dict | None}
         """
-        options = self._build_options(
-            system_override=system_prompt, output_format=output_format
-        )
-        log_system_event(f"{self._tag} LLMBase execute_structured")
-
-        if self.log_file:
-            self._write()
-            self._write_block(f">>> [{self.agent_label or 'LLM'}] 开始执行（结构化）")
+        # 需要将 output_format 注入到 options 中
+        orig_output_format = self.output_format
+        if output_format is not None:
+            self.output_format = output_format
 
         try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
-                text_parts: List[str] = []
-                structured_data = None
-
-                async for msg in client.receive_response():
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                if self.log_file:
-                                    self._write_stream(block.text)
-                                text_parts.append(block.text)
-                            elif isinstance(block, ThinkingBlock):
-                                if self.log_file and block.thinking.strip():
-                                    self._write_stream(
-                                        f"\n--- THINK {block.thinking[:500]}...\n"
-                                    )
-                            elif (
-                                isinstance(block, ToolUseBlock)
-                                and block.name == "StructuredOutput"
-                                and isinstance(block.input, dict)
-                            ):
-                                structured_data = block.input
-                            elif isinstance(block, ToolUseBlock):
-                                if self.log_file:
-                                    self._write_tool_call(block.name, block.input)
-
-                    elif isinstance(msg, UserMessage):
-                        if self.log_file and isinstance(msg.content, list):
-                            for item in msg.content:
-                                if isinstance(item, ToolResultBlock):
-                                    self._write_tool_result(
-                                        item.content, item.is_error
-                                    )
-
-                    elif isinstance(msg, ResultMessage):
-                        if structured_data is None:
-                            if (
-                                hasattr(msg, "structured_output")
-                                and msg.structured_output is not None
-                            ):
-                                structured_data = msg.structured_output
-                            elif msg.result:
-                                try:
-                                    structured_data = json.loads(msg.result)
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-                        if self.log_file:
-                            cost = msg.total_cost_usd
-                            cost_str = (
-                                f"(${cost:.4f})" if cost is not None else ""
-                            )
-                            self._write(
-                                f"\n[OK] [{self.agent_label or 'LLM'}] "
-                                f"完成 {cost_str}"
-                            )
-                        break
-
-                return {"text": "".join(text_parts), "structured": structured_data}
-
-        except Exception as e:
-            log_system_event(
-                f"{self._tag} LLMBase 异常", str(e), level=logging.ERROR
-            )
-            if self.log_file:
-                self._write(f"\n[ERR] [{self.agent_label or 'LLM'}] 异常: {e}")
-            raise
+            await self.open_session(system_prompt=system_prompt)
+            try:
+                result = await self.session_send(prompt, output_format=output_format)
+                return result
+            finally:
+                await self.close_session()
+        finally:
+            self.output_format = orig_output_format
 
 
 __all__ = ["LLMBase"]

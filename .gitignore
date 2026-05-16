@@ -2,6 +2,7 @@
 .mcp.json
 .venv/
 .idea/
+.claude/
 mcp_server/
 shared/logs
 shared/state
