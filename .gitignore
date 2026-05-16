@@ -3,6 +3,7 @@
 .venv/
 .idea/
 .claude/
+.playwright-mcp/
 scripts/
 mcp_server/
 shared/logs

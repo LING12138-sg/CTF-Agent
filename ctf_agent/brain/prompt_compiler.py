@@ -59,6 +59,10 @@ async def compile_recon(llm: LLMBase, ctx: ChallengeContext) -> str:
         lines.append(f"framework: {ts.framework}")
     if ts.database:
         lines.append(f"database: {ts.database}")
+    if ts.os:
+        lines.append(f"os: {ts.os}")
+    if ts.middleware:
+        lines.append(f"middleware: {', '.join(ts.middleware)}")
 
     lines.append("")
     lines.append("</raw_recon_data>")

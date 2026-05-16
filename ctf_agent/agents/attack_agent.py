@@ -31,6 +31,7 @@ from typing import Dict, List, Optional
 from ..brain.prompts import get_attack_prompt
 from ..common import log_attack_event, log_finding_event, now_str
 from ..llm.base import LLMBase
+from ..llm.schemas import ORCHESTRATOR_OUTPUT_SCHEMA
 from ..types import (
     AgentResult, AgentStatus, AttackPlan, ChallengeContext,
     Finding, FindingType, Severity,
@@ -132,9 +133,10 @@ class AttackAgent(BaseAgent):
 ## 规则
 1. 逐步执行，每步报告结果
 2. 初始方法不奏效时尝试 2-3 个变体
-3. 找到 flag{{...}} → `FOUND_FLAG: flag{{...}}`
-4. 全部失败 → `GIVE_UP: 原因`
+3. 找到 flag 时，在最终结构化输出中设置 success=true 并填入 flag 值
+4. 全部失败时，设置 success=false 并在 blocked_reason 中说明原因
 5. 重要发现用 record_key_finding 记录
+6. 每条新发现请在最终结构化输出的 findings 数组中描述
 
 ## 当前题目路径
 题目标识: {self.ctx.challenge_id}
@@ -170,10 +172,14 @@ Writeup: wp/{self.ctx.challenge_id}/
             log_file=log_file or None,
             use_executor=True,
             shared_dir=self._shared_dir,
+            output_format=ORCHESTRATOR_OUTPUT_SCHEMA,
         )
 
         try:
-            response = await tool_agent.execute(user_message)
+            result = await tool_agent.execute_structured(
+                user_message,
+                output_format=ORCHESTRATOR_OUTPUT_SCHEMA,
+            )
         except Exception as e:
             log_attack_event(f"LLM 调用异常", str(e), level=logging.WARNING)
             return AgentResult(
@@ -186,10 +192,15 @@ Writeup: wp/{self.ctx.challenge_id}/
                 finished_at=now_str(),
             )
 
-        # 解析结果
-        flag = self._extract_flag(response)
-        gave_up = self._extract_give_up(response)
-        findings = self._extract_findings(response)
+        response = result.get("text", "")
+        structured = result.get("structured") or {}
+
+        # 解析结果：优先结构化输出，失败回退正则
+        flag = structured.get("flag") or self._extract_flag(response)
+        gave_up = not flag and (structured.get("blocked_reason") or self._extract_give_up(response))
+
+        raw_findings = structured.get("findings", [])
+        findings = self._findings_from_structured(raw_findings) if raw_findings else self._extract_findings(response)
         self.findings.extend(findings)
 
         if flag:
@@ -208,20 +219,21 @@ Writeup: wp/{self.ctx.challenge_id}/
                 status=AgentStatus.FOUND_FLAG,
                 flag=flag,
                 findings=self.findings,
-                summary="攻击成功，Flag 已找到",
+                summary=structured.get("summary", "攻击成功，Flag 已找到"),
                 steps_taken=1,
                 started_at=now_str(),
                 finished_at=now_str(),
             )
 
         if gave_up:
-            log_attack_event(f"攻击放弃", f"agent={self.agent_id} reason={gave_up}")
+            reason = structured.get("blocked_reason") or self._extract_give_up(response) or "未知原因"
+            log_attack_event(f"攻击放弃", f"agent={self.agent_id} reason={reason}")
             return AgentResult(
                 agent_id=self.agent_id,
                 plan_id=self.plan.id,
                 status=AgentStatus.FAILED,
                 findings=self.findings,
-                summary=f"放弃: {gave_up}",
+                summary=f"放弃: {reason}",
                 steps_taken=1,
                 started_at=now_str(),
                 finished_at=now_str(),
@@ -232,14 +244,35 @@ Writeup: wp/{self.ctx.challenge_id}/
             plan_id=self.plan.id,
             status=AgentStatus.FAILED,
             findings=self.findings,
-            summary="执行完毕，未找到 Flag",
+            summary=structured.get("summary", "执行完毕，未找到 Flag"),
             steps_taken=1,
             started_at=now_str(),
             finished_at=now_str(),
         )
 
-    def _extract_flag(self, text: str) -> Optional[str]:
-        """从 LLM 输出中提取 Flag"""
+    @staticmethod
+    def _findings_from_structured(findings_data: List[Dict]) -> List[Finding]:
+        """从结构化输出解析发现列表"""
+        results = []
+        for fd in findings_data:
+            if not isinstance(fd, dict):
+                continue
+            ftype_str = fd.get("type", "info")
+            try:
+                ftype = FindingType(ftype_str.lower())
+            except ValueError:
+                ftype = FindingType.INFO
+            results.append(Finding(
+                type=ftype,
+                title=(fd.get("description", "") or "")[:80],
+                description=fd.get("description", ""),
+                confidence=float(fd.get("confidence", 50)),
+            ))
+        return results
+
+    @staticmethod
+    def _extract_flag(text: str) -> Optional[str]:
+        """从 LLM 输出中提取 Flag（正则回退）"""
         patterns = [
             r"FOUND_FLAG:\s*(flag\{[^}]+\})",
             r"FLAG:\s*(flag\{[^}]+\})",
@@ -251,13 +284,15 @@ Writeup: wp/{self.ctx.challenge_id}/
                 return match.group(1)
         return None
 
-    def _extract_give_up(self, text: str) -> Optional[str]:
-        """提取放弃原因"""
+    @staticmethod
+    def _extract_give_up(text: str) -> Optional[str]:
+        """提取放弃原因（正则回退）"""
         match = re.search(r"GIVE_UP:\s*(.+?)(?:\n|$)", text)
         return match.group(1).strip() if match else None
 
-    def _extract_findings(self, text: str) -> List[Finding]:
-        """提取行内发现的 FINDING 信息"""
+    @staticmethod
+    def _extract_findings(text: str) -> List[Finding]:
+        """提取行内发现的 FINDING 信息（正则回退）"""
         findings = []
         for match in re.finditer(r"FINDING:\s*(\w+)\s*\|\s*(.+?)(?:\n|$)", text):
             ftype_str, desc = match.group(1), match.group(2).strip()

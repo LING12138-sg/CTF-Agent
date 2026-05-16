@@ -35,6 +35,7 @@ from .types import (
     Finding, FindingType, PlanStatus, Severity, TargetInfo,
 )
 from .utils.http import get_with_retry, probe_endpoint
+from .utils.recon import nmap_scan, enrich_tech_stack
 
 
 class Runner:
@@ -179,40 +180,85 @@ class Runner:
     async def _do_recon(self):
         """自动侦察阶段
 
-        类似 CHYing-agent 的 auto_recon_web_target，
-        在 Agent 决策前先收集基础信息。
+        两层侦察：
+        1. HTTP header 探测（快速获取 Server 和基础信息）
+        2. nmap 扫描（获取 OS、开放端口、服务版本、数据库等深层信息）
         """
         target = self.ctx.target
         log_system_event(f"开始自动侦察: {target.url}")
 
-        # 1. 基础探测
+        # ==================== Layer 1: HTTP 基础探测 ====================
         result = probe_endpoint(target.url)
         if result.get("error"):
-            log_system_event(f"侦察失败", result["error"], level=logging.WARNING)
-            return
+            log_system_event(f"HTTP 探测失败", result["error"], level=logging.WARNING)
 
-        # 2. 提取技术栈
-        headers = result.get("headers", {})
-        server = headers.get("Server", "")
-        content_type = headers.get("Content-Type", "")
-        powered_by = headers.get("X-Powered-By", "")
+        http_tech_detected = False
+        if result and not result.get("error"):
+            headers = result.get("headers", {})
+            server = headers.get("Server", "")
+            content_type = headers.get("Content-Type", "")
+            powered_by = headers.get("X-Powered-By", "")
 
-        self.ctx.tech_stack.server = server
+            self.ctx.tech_stack.server = server
 
-        if "php" in (server + powered_by).lower():
-            self.ctx.tech_stack.language = "PHP"
-        elif "python" in (content_type + powered_by).lower() or "wsgi" in server.lower():
-            self.ctx.tech_stack.language = "Python"
-        elif "java" in server.lower() or "tomcat" in server.lower() or "java" in powered_by.lower():
-            self.ctx.tech_stack.language = "Java"
-        elif "go" in server.lower() or "gin" in server.lower():
-            self.ctx.tech_stack.language = "Go"
-        elif "asp" in (server + powered_by).lower():
-            self.ctx.tech_stack.language = "ASP.NET"
+            if "php" in (server + powered_by).lower():
+                self.ctx.tech_stack.language = "PHP"
+                http_tech_detected = True
+            elif "python" in (content_type + powered_by).lower() or "wsgi" in server.lower():
+                self.ctx.tech_stack.language = "Python"
+                http_tech_detected = True
+            elif "java" in server.lower() or "tomcat" in server.lower() or "java" in powered_by.lower():
+                self.ctx.tech_stack.language = "Java"
+                http_tech_detected = True
+            elif "go" in server.lower() or "gin" in server.lower():
+                self.ctx.tech_stack.language = "Go"
+                http_tech_detected = True
+            elif "asp" in (server + powered_by).lower():
+                self.ctx.tech_stack.language = "ASP.NET"
+                http_tech_detected = True
 
-        log_system_event(f"技术栈: {self.ctx.tech_stack.server} / {self.ctx.tech_stack.language}")
+            log_system_event(f"HTTP 探测: {server} / {self.ctx.tech_stack.language or '未识别'}")
 
-        # 3. PromptCompiler: 将侦察数据编译为结构化 XML
+        # ==================== Layer 2: nmap 深度扫描 ====================
+        # HTTP header 只能看到最外层代理（如 openresty），
+        # nmap -sV 能穿透识别真实后端服务
+        nmap_target = target.ip or target.url
+        nmap_result = await nmap_scan(nmap_target, timeout=120)
+
+        if nmap_result.get("error"):
+            log_system_event(f"nmap 扫描不可用: {nmap_result['error']}", level=logging.WARNING)
+        elif nmap_result.get("ports"):
+            # 用 nmap 结果丰富 TechStack（如果 HTTP 层已经识别出了语言，nmap 不需要覆盖）
+            enrich_tech_stack(self.ctx.tech_stack, nmap_result)
+
+            # 保存原始端口列表到 target
+            open_ports = [p["port"] for p in nmap_result["ports"]]
+            self.ctx.target.ports = open_ports
+
+            # 记录关键发现
+            port_summary = "; ".join(
+                f"{p['port']}/{p['protocol']} ({p['service']} {p.get('version_str', '').strip()})"
+                for p in nmap_result["ports"][:10]
+            )
+
+            # 输出汇总
+            log_system_event(f"nmap: 发现 {len(open_ports)} 个开放端口")
+            log_system_event(f"nmap: {port_summary}")
+            if self.ctx.tech_stack.os:
+                log_system_event(f"nmap OS: {self.ctx.tech_stack.os}")
+            if self.ctx.tech_stack.database and not http_tech_detected:
+                log_system_event(f"nmap 数据库: {self.ctx.tech_stack.database}")
+        else:
+            log_system_event("nmap: 未发现开放端口")
+
+        log_system_event(
+            f"综合技术栈: {self.ctx.tech_stack.server} / "
+            f"{self.ctx.tech_stack.language or '?'} / "
+            f"{self.ctx.tech_stack.database or '?'} / "
+            f"{self.ctx.tech_stack.os or '?'}"
+        )
+
+        # ==================== Phase 3: PromptCompiler ====================
         compiled = await compile_recon(self.llm, self.ctx)
         if compiled:
             self.ctx.compiled_recon = compiled
