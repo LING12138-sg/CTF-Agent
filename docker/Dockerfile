@@ -10,6 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Phase 1: 镜像源配置（必须成功）
 # ============================================================
 RUN set -eux; \
+    success=0; \
     mirrors="mirrors.aliyun.com/kali mirrors.cloud.tencent.com/kali mirrors.tencent.com/kali mirrors.tuna.tsinghua.edu.cn/kali ftp.acc.umu.se/mirror/kali.org/kali"; \
     for m in $mirrors; do \
         [ "$success" = 1 ] && break; \
