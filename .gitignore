@@ -1,0 +1,7 @@
+.env
+.mcp.json
+.venv/
+.idea/
+mcp_server/
+shared/logs
+shared/state
