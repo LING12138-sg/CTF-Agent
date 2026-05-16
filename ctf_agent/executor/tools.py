@@ -144,6 +144,28 @@ async def web_fetch(url: str, timeout: int = 15) -> str:
         return f"[ERROR] web_fetch 整体超时"
 
 
+# ── Record Key Finding ──
+
+async def record_key_finding(
+    finding: dict,
+    shared_dir: str,
+) -> str:
+    """记录关键发现（持久化到 findings.log 和 progress.md）
+
+    由 MCP 工具 record_key_finding 调用，不直接暴露给 LLM。
+    原因：shared_dir 路径应由框架注入而非 LLM 指定。
+
+    Args:
+        finding: 发现字典（kind, title, evidence, status 等）
+        shared_dir: 共享目录路径
+
+    Returns:
+        状态消息
+    """
+    from ..recorder.persistence import record_finding as _record
+    return _record(finding, shared_dir)
+
+
 # ── Web Search ──
 
 async def web_search(query: str) -> str:

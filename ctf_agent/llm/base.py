@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -76,6 +76,8 @@ class LLMBase:
         agent_label: str = "",
         log_file: Optional[str] = None,
         use_executor: bool = False,
+        max_guidance_rounds: int = 0,
+        shared_dir: Optional[str] = None,
     ):
         self.model = model or os.getenv("ANTHROPIC_MODEL", "")
         self.api_key = api_key or os.getenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -93,6 +95,8 @@ class LLMBase:
         self.agent_label = agent_label
         self.log_file = log_file
         self.use_executor = use_executor
+        self.max_guidance_rounds = max_guidance_rounds
+        self.shared_dir = shared_dir or os.path.join(self.cwd, "shared", "logs")
         self._tag = f"[{agent_label}]" if agent_label else ""
 
         self._env = self._build_env()
@@ -119,7 +123,7 @@ class LLMBase:
             system_prompt: 可选的 system prompt 覆盖
             output_format: JSON Schema，持久会话期间固定（不可在 query() 时变更）
         """
-        if self._persistent_client is not None:
+        if self._persistent_client is not None and self._persistent_session_active:
             return
         options = self._build_options(
             system_override=system_prompt, output_format=output_format
@@ -148,6 +152,10 @@ class LLMBase:
     ) -> Dict[str, Any]:
         """在持久会话中发送消息并等待完整响应
 
+        当 max_guidance_rounds > 0 时自动运行 Guidance Loop：
+        每轮检查 _guidance_is_solved()，未完成则用 _guidance_build_query()
+        构建追加 query 继续。多轮结果自动合并。
+
         Args:
             prompt: 用户消息
             output_format: JSON Schema（可选，仅用于 _process_stream 解析回退）
@@ -155,7 +163,7 @@ class LLMBase:
                           query() 时不可变更。
 
         Returns:
-            {"text": str, "structured": dict | None}
+            {"text": str, "structured": dict | None, "is_error": bool, "error_message": str | None}
         """
         if not self._persistent_client or not self._persistent_session_active:
             raise RuntimeError("没有活跃的持久会话，请先调用 _ensure_connected()")
@@ -170,10 +178,57 @@ class LLMBase:
                 f">>> [{self.agent_label or 'LLM'}] query"
             )
 
+        # ── 第一轮 ──
         await self._persistent_client.query(prompt)
-        return await self._process_stream(
+        result = await self._process_stream(
             self._persistent_client, output_format=output_format
         )
+
+        # ── Guidance Loop（max_guidance_rounds > 0 时启用） ──
+        if self.max_guidance_rounds > 0:
+            round_count = 0
+            while (
+                not result.get("is_error", False)
+                and not self._guidance_is_solved(result)
+                and round_count < self.max_guidance_rounds
+            ):
+                round_count += 1
+
+                guidance_msg, should_stop = self._guidance_build_query(
+                    result, round_count
+                )
+                if should_stop:
+                    break
+
+                log_system_event(
+                    f"{self._tag} Guidance round {round_count}/{self.max_guidance_rounds}"
+                    f" | msg_len={len(guidance_msg)}"
+                )
+                if self.log_file:
+                    self._write_block(
+                        f"Guidance Round {round_count}/{self.max_guidance_rounds}",
+                        guidance_msg,
+                    )
+
+                await self._persistent_client.query(guidance_msg)
+                new_result = await self._process_stream(
+                    self._persistent_client, output_format=output_format
+                )
+
+                # 合并结果：文本追加，结构化取最新，错误取最新
+                text_parts = [
+                    result.get("text", ""),
+                    new_result.get("text", ""),
+                ]
+                result["text"] = "\n".join(p for p in text_parts if p)
+                if new_result.get("structured"):
+                    result["structured"] = new_result["structured"]
+                if new_result.get("is_error"):
+                    result["is_error"] = new_result["is_error"]
+                    result["error_message"] = new_result.get("error_message")
+                    break
+
+        return result
 
     # ── 文件日志输出 ──
 
@@ -241,6 +296,35 @@ class LLMBase:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = self.model
         return env
 
+    # ── Guidance Loop 钩子 ──
+    #
+    # 子类或调用方可以覆盖这些方法来定制 Guidance Loop 行为。
+    # 默认实现：无结构化数据时不循环；有结构化数据时检查 solved/success 字段。
+    #
+    # 使用方式（PlanAgent 示例）：
+    #   self.llm.max_guidance_rounds = 3
+    #   self.llm._guidance_is_solved = my_check
+    #   self.llm._guidance_build_query = my_build
+
+    def _guidance_is_solved(self, result: Dict[str, Any]) -> bool:
+        """检查本轮结果是否已达到目标（结束循环）。"""
+        structured = result.get("structured")
+        if not structured or not isinstance(structured, dict):
+            return False
+        return bool(structured.get("solved") or structured.get("success"))
+
+    def _guidance_build_query(
+        self, result: Dict[str, Any], round_count: int
+    ) -> Tuple[str, bool]:
+        """分析本轮结果，构建下一轮指导 query。
+
+        Returns:
+            (guidance_message, should_stop):
+            - guidance_message: 追加给 Agent 的指导 prompt
+            - should_stop: True 表示立即终止循环
+        """
+        return ("", True)
+
     # ── Options 构建 ──
 
     def _build_options(
@@ -283,7 +367,9 @@ class LLMBase:
         if self.use_executor:
             if self._executor_server is None:
                 from ..executor import create_executor_server
-                self._executor_server = create_executor_server()
+                self._executor_server = create_executor_server(
+                    shared_dir=self.shared_dir,
+                )
             from ..executor import executor_mcp_config
             mcp_servers.update(executor_mcp_config(self._executor_server))
 
@@ -319,6 +405,8 @@ class LLMBase:
         """
         text_parts: List[str] = []
         structured_data = None
+        is_error = False
+        error_message: Optional[str] = None
 
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
@@ -376,9 +464,14 @@ class LLMBase:
                         msg.error_message or msg.result or "未知",
                         level=logging.WARNING,
                     )
+                is_error = msg.is_error
+                error_message = (msg.error_message or msg.result) if msg.is_error else None
                 break
 
-        return {"text": "".join(text_parts), "structured": structured_data}
+        return {
+            "text": "".join(text_parts), "structured": structured_data,
+            "is_error": is_error, "error_message": error_message,
+        }
 
     async def execute(
         self, prompt: str, system_prompt: Optional[str] = None

@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..common import log_plan_event, log_system_event
-from ..llm.base import LLMBase
+from ..common import log_plan_event
 from ..llm.schemas import PLANS_OUTPUT_SCHEMA
 from ..types import (
     AttackPlan, ChallengeContext, Finding, FindingType,
@@ -47,7 +46,8 @@ class PlanAgent:
     async def analyze_and_plan(self, ctx: ChallengeContext, human_hint: str = "") -> List[AttackPlan]:
         """分析目标并生成攻击计划
 
-        使用持久会话：建立连接 → query（Guidance Loop） → 断开连接。
+        使用持久会话 + 框架级 Guidance Loop（通过 LLMBase.query() 内置）。
+        将 Guidance 钩子挂载到 LLM 实例上，loop 自动运行最多 max_rounds 轮。
 
         Args:
             ctx: 当前题目上下文（含目标信息、已有发现）
@@ -81,46 +81,68 @@ class PlanAgent:
 你可以使用 Bash、WebFetch、WebSearch 等工具浏览目标、搜索已知漏洞信息。
 分析完成后，输出攻击计划。"""
 
-        # 2. 建立持久会话 + Guidance Loop
-        plans: List[AttackPlan] = []
-        max_rounds = 3
-        guidance = user_message
+        # 2. 持久会话 + 框架级 Guidance Loop
+        # 挂载 Guidance 钩子到 llm 实例，query() 内部自动循环
+        # 先保存原始方法，finally 中恢复
+        _orig_is_solved = self.llm._guidance_is_solved
+        _orig_build = self.llm._guidance_build_query
+        _orig_max_rounds = self.llm.max_guidance_rounds
+
+        self.llm.max_guidance_rounds = 3
+        self.llm._guidance_is_solved = self._guidance_check_solved
+        self.llm._guidance_build_query = self._guidance_build_query
+        self._last_user_message = user_message
 
         await self.llm._ensure_connected(
             system_prompt=self.system_prompt, output_format=PLANS_OUTPUT_SCHEMA
         )
+        plans: List[AttackPlan] = []
         try:
-            for round_idx in range(max_rounds):
-                log_plan_event(f"Guidance Round {round_idx + 1}/{max_rounds}")
-                result = await self.llm.query(guidance, output_format=PLANS_OUTPUT_SCHEMA)
+            result = await self.llm.query(user_message, output_format=PLANS_OUTPUT_SCHEMA)
 
-                structured = result.get("structured") or {}
-                plans_data = structured.get("plans", []) if isinstance(structured, dict) else []
+            # 3. 解析结果
+            structured = result.get("structured") or {}
+            plans_data = structured.get("plans", [])
+            if plans_data:
+                plans = self._parse_plans_from_data(plans_data, ctx)
 
-                if plans_data:
-                    plans = self._parse_plans_from_data(plans_data, ctx)
-                    if plans:
-                        break
-
-                # 没有有效计划 → 构造 guidance 重试
+            if not plans:
                 text = result.get("text", "")
-                if round_idx < max_rounds - 1:
-                    guidance = (
-                        "上一轮没有输出有效的攻击计划。请重新分析目标，"
-                        "并使用工具的返回值制定至少 2 个具体的攻击计划。\n\n"
-                        f"原始目标信息:\n{user_message}\n\n"
-                        f"你上一轮的回复:\n{text[:2000]}"
-                    )
-                else:
-                    # 最后一轮仍失败，回退文本解析
-                    log_plan_event("Guidance Loop 耗尽，回退文本解析", level=logging.WARNING)
-                    plans = self._parse_plans_from_response(text, ctx) if text else []
+                if text:
+                    log_plan_event("结构化输出为空，回退文本解析", level=logging.WARNING)
+                    plans = self._parse_plans_from_response(text, ctx)
+
         finally:
-            # 3. 确保持久会话始终断开
+            # 4. 清理：断开持久会话 + 恢复 LLM 默认引导方法
             await self.llm.reset_session()
+            self.llm.max_guidance_rounds = _orig_max_rounds
+            self.llm._guidance_is_solved = _orig_is_solved
+            self.llm._guidance_build_query = _orig_build
 
         log_plan_event(f"生成 {len(plans)} 个攻击计划", f"plans={[p.title for p in plans]}")
         return plans
+
+    def _guidance_check_solved(self, result: Dict[str, Any]) -> bool:
+        """Guidance Loop 完成条件：输出包含有效 plans 数组"""
+        structured = result.get("structured") or {}
+        return bool(structured.get("plans"))
+
+    def _guidance_build_query(
+        self, result: Dict[str, Any], round_count: int
+    ) -> Tuple[str, bool]:
+        """未输出有效计划时，构造重试指导"""
+        structured = result.get("structured") or {}
+        if structured.get("plans"):
+            return ("", True)
+
+        text = result.get("text", "")
+        guidance_msg = (
+            "上一轮没有输出有效的攻击计划。请重新分析目标，"
+            "并使用工具的返回值制定至少 2 个具体的攻击计划。\n\n"
+            f"原始目标信息:\n{self._last_user_message}\n\n"
+            f"你上一轮的回复:\n{text[:2000]}"
+        )
+        return (guidance_msg, False)
 
     async def review_findings(
         self,

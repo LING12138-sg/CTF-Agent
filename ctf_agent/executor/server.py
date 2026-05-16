@@ -17,16 +17,21 @@ from mcp.server.fastmcp import FastMCP
 from . import tools
 
 
-def create_executor_server(name: str = "ctf-executor") -> FastMCP:
+def create_executor_server(
+    name: str = "ctf-executor",
+    shared_dir: str = "",
+) -> FastMCP:
     """创建 Executor MCP 服务器实例
 
     Args:
-        name: MCP 服务器名称（用于 SDK 配置中的 key）
+        name: MCP 服务器名称
+        shared_dir: 共享目录路径（用于 record_key_finding 持久化）
 
     Returns:
-        FastMCP 实例，可通过 McpSdkServerConfig 注入 Agent
+        FastMCP 实例
     """
     mcp = FastMCP(name)
+    _shared = shared_dir or ""
 
     # ── 注册工具 ──
 
@@ -66,5 +71,50 @@ def create_executor_server(name: str = "ctf-executor") -> FastMCP:
             query: Search query string
         """
         return await tools.web_search(query)
+
+    @mcp.tool(
+        description=(
+            "记录关键发现。在发现漏洞、凭据、重要信息或确认死胡同时调用此工具。"
+            "持久化到 findings.log 和 progress.md，供其他 Agent 和评审流程使用。"
+        )
+    )
+    async def record_key_finding(
+        kind: str = "info",
+        title: str = "",
+        evidence: str = "",
+        status: str = "hypothesis",
+        verification_method: str = "inferred",
+        commands_and_results: str = "",
+        confidence: float = 0.5,
+        next_action: str = "",
+        details: str = "",
+    ) -> str:
+        """记录关键发现
+
+        Args:
+            kind: 发现类型 — vulnerability, credential, info, dead_end, endpoint, config
+            title: 发现标题（用于 progress.md 去重）
+            evidence: 核心证据（必填）
+            status: 状态 — hypothesis, tested, confirmed, exploited, dead_end
+            verification_method: 验证方式 — executed, observed, inferred
+            commands_and_results: 执行的命令与输出
+            confidence: 置信度 (0.0-1.0)
+            next_action: 建议下一步
+            details: 详细推导/利用过程
+        """
+        finding = {
+            "kind": kind,
+            "title": title,
+            "evidence": evidence,
+            "status": status,
+            "verification_method": verification_method,
+            "commands_and_results": commands_and_results,
+            "confidence": confidence,
+            "next_action": next_action,
+            "details": details,
+        }
+        return await tools.record_key_finding(
+            finding, shared_dir=_shared,
+        )
 
     return mcp

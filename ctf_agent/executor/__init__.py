@@ -38,7 +38,7 @@ def executor_mcp_config(
         {"ctf-executor": McpSdkServerConfig}
     """
     if mcp_instance is None:
-        mcp_instance = create_executor_server(server_name)
+        mcp_instance = create_executor_server(server_name, shared_dir="")
     return {
         server_name: McpSdkServerConfig(
             type="sdk",
