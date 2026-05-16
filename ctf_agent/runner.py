@@ -35,7 +35,7 @@ from .types import (
     Finding, FindingType, PlanStatus, Severity, TargetInfo,
 )
 from .utils.http import get_with_retry, probe_endpoint
-from .utils.recon import nmap_scan, enrich_tech_stack
+from .utils.recon import nmap_scan, whatweb_scan, enrich_from_whatweb, enrich_tech_stack
 from .sandbox import ensure_sandbox, shutdown_sandbox
 
 
@@ -241,7 +241,17 @@ class Runner:
 
             log_system_event(f"HTTP 探测: {server} / {self.ctx.tech_stack.language or '未识别'}")
 
-        # ==================== Layer 2: nmap 深度扫描 ====================
+        # ==================== Layer 2: whatweb Web 指纹扫描 ====================
+        # whatweb 发 HTTP 请求解析 response headers / body / cookies，
+        # 对于 tcpwrapped / CDN 场景比 nmap -sV 更可靠。
+        whatweb_result = await whatweb_scan(target.url, timeout=60, aggressive=True)
+        if whatweb_result.get("error"):
+            log_system_event(f"whatweb 不可用: {whatweb_result['error']}", level=logging.WARNING)
+        elif whatweb_result.get("plugins"):
+            enrich_from_whatweb(self.ctx.tech_stack, whatweb_result)
+            log_system_event(f"whatweb: 识别 {len(whatweb_result['plugins'])} 个组件")
+
+        # ==================== Layer 3: nmap 深度扫描 ====================
         # HTTP header 只能看到最外层代理（如 openresty），
         # nmap -sV 能穿透识别真实后端服务
         nmap_target = target.ip or target.url

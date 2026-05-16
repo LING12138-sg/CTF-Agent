@@ -2,7 +2,11 @@
 高级侦察工具
 =============
 
-提供 nmap 扫描等深层侦察能力，补充 HTTP header 级别的技术栈识别。
+提供 nmap 扫描（端口/服务/OS）+ whatweb 扫描（Web 指纹识别），
+补充 HTTP header 级别的技术栈识别。
+
+whatweb 通过 HTTP 请求解析指纹，不依赖 TCP 连接握手，
+适合 tcpwrapped / CDN 场景。
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -203,6 +208,169 @@ def _parse_nmap_xml(raw_xml: str) -> Dict[str, Any]:
     return result
 
 
+# ── whatweb Web 指纹识别 ──
+
+
+async def whatweb_scan(
+    target: str,
+    *,
+    timeout: int = 60,
+    aggressive: bool = True,
+) -> Dict[str, Any]:
+    """通过沙箱执行 whatweb 扫描，识别 Web 技术栈
+
+    whatweb 通过 HTTP 请求解析指纹（headers / cookies / body），
+    不依赖 TCP 连接握手，适合 tcpwrapped / CDN 场景。
+
+    Args:
+        target: 目标 URL（如 http://host:port/path）
+        timeout: 超时秒数
+        aggressive: 是否启用 --aggressive 模式（更多请求，更准）
+
+    Returns:
+        plugins / raw_output / error
+    """
+    from ..sandbox import get_executor
+
+    loop = asyncio.get_event_loop()
+
+    # 检查 whatweb 是否可用
+    try:
+        check = await loop.run_in_executor(
+            None, lambda: get_executor().execute("whatweb --version", timeout=10)
+        )
+        if check.exit_code != 0:
+            return {"plugins": [], "raw_output": "", "error": "whatweb not available in sandbox"}
+    except Exception as e:
+        log_system_event(f"whatweb 检查失败: {e}", level=logging.WARNING)
+        return {"plugins": [], "raw_output": "", "error": f"whatweb check failed: {e}"}
+
+    args = "--aggressive" if aggressive else ""
+    cmd = f"whatweb {args} '{target}' 2>/dev/null".strip()
+
+    log_system_event(f"开始 whatweb 扫描: {target}" + (" (aggressive)" if aggressive else ""))
+
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: get_executor().execute(cmd, timeout=timeout, caller="whatweb_scan"),
+        )
+    except Exception as e:
+        log_system_event(f"whatweb 扫描异常: {e}", level=logging.WARNING)
+        return {"plugins": [], "raw_output": "", "error": str(e)}
+
+    raw = result.stdout.strip()
+    if not raw:
+        return {"plugins": [], "raw_output": "", "error": "empty output"}
+
+    plugins = _parse_whatweb_output(raw)
+
+    log_system_event(
+        "whatweb 扫描完成",
+        f"识别 {len(plugins)} 个组件",
+    )
+    return {"plugins": plugins, "raw_output": raw, "error": None}
+
+
+def _parse_whatweb_output(raw: str) -> List[Dict[str, str]]:
+    """解析 whatweb 文本输出
+
+    格式: http://url [Status] Plugin1[val1][val2], Plugin2[val], ...
+
+    Returns:
+        [{name, version, all_values}, ...]
+    """
+    # 提取插件部分（在状态码之后）
+    match = re.search(r'\]\s+(.+)', raw)
+    if not match:
+        return []
+
+    plugins_text = match.group(1)
+    plugins: List[Dict[str, str]] = []
+
+    # 按逗号分割每个插件
+    for part in plugins_text.split(", "):
+        part = part.strip()
+        if not part:
+            continue
+
+        # 解析 PluginName[value1][value2]...
+        name_match = re.match(r'^([^\[]+?)((?:\[[^\]]*\])*)$', part)
+        if not name_match:
+            plugins.append({"name": part, "version": "", "all_values": []})
+            continue
+
+        name = name_match.group(1).strip()
+        brackets = name_match.group(2)
+
+        # 提取所有 [] 内的值
+        values = re.findall(r'\[([^\]]*)\]', brackets)
+        version = values[0] if values else ""
+
+        plugins.append({"name": name, "version": version, "all_values": values})
+
+    return plugins
+
+
+def enrich_from_whatweb(
+    tech_stack: Any,
+    whatweb_result: Dict[str, Any],
+) -> None:
+    """用 whatweb 扫描结果丰富 TechStack
+
+    whatweb 比 nmap -sV 更适合 tcpwrapped 场景，
+    因为它通过 HTTP 请求解析指纹，不依赖 TCP 连接握手。
+    """
+    if whatweb_result.get("error") or not whatweb_result.get("plugins"):
+        return
+
+    plugins = whatweb_result["plugins"]
+    plugin_names = {p["name"].lower() for p in plugins}
+    name_to_plugin: dict = {}
+    for p in plugins:
+        name_to_plugin[p["name"].lower()] = p
+
+    _SERVER_NAMES = frozenset({
+        "openresty", "nginx", "apache", "apache httpd", "httpd", "iis",
+        "tomcat", "caddy", "lighttpd",
+    })
+    _LANG_NAMES = frozenset({
+        "php", "python", "java", "perl", "ruby", "asp.net",
+    })
+    _FRAMEWORK_NAMES = frozenset({
+        "django", "flask", "fastapi", "express",
+        "spring", "struts", "thinkphp", "laravel", "yii",
+        "wordpress", "drupal", "joomla",
+    })
+
+    # Server
+    for name in _SERVER_NAMES & plugin_names:
+        p = name_to_plugin[name]
+        tag = f"{p['name']} {p['version']}".strip()
+        if not tech_stack.server:
+            tech_stack.server = tag
+            log_system_event(f"[WhatWeb] 识别 Server: {tech_stack.server}")
+        if tag not in tech_stack.middleware:
+            tech_stack.middleware.append(tag)
+
+    # Language
+    for name in _LANG_NAMES & plugin_names:
+        p = name_to_plugin[name]
+        if not tech_stack.language:
+            tech_stack.language = p["name"]
+            log_system_event(f"[WhatWeb] 识别语言: {tech_stack.language}")
+
+    # Framework / CMS
+    for name in _FRAMEWORK_NAMES & plugin_names:
+        p = name_to_plugin[name]
+        tag = f"{p['name']} {p['version']}".strip()
+        if not tech_stack.framework:
+            tech_stack.framework = tag
+            log_system_event(f"[WhatWeb] 识别框架: {tech_stack.framework}")
+
+    log_system_event(f"[WhatWeb] 组件列表: {[p['name'] for p in plugins]}")
+
+
 def enrich_tech_stack(
     tech_stack: Any,
     nmap_result: Dict[str, Any],
@@ -283,4 +451,4 @@ def enrich_tech_stack(
     # 如果有端口 8080/8443 等非标准 web 端口开着不同服务，那才是 real backend
 
 
-__all__ = ["nmap_scan", "enrich_tech_stack"]
+__all__ = ["nmap_scan", "whatweb_scan", "enrich_from_whatweb", "enrich_tech_stack"]
