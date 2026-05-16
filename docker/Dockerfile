@@ -5,8 +5,10 @@ FROM kalilinux/kali-rolling
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Phase 1: 配置 apt 源 + 基础系统
-RUN echo "deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list \
-    && apt-get update \
+# 清掉 Kali 自带源文件，只用一个，避免重复配置告警
+RUN rm -f /etc/apt/sources.list.d/*.sources \
+    && echo "deb https://mirrors.aliyun.com/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
         python3 python3-pip python-is-python3 \
         curl wget git jq unzip tree file xxd ca-certificates openssl \
@@ -14,7 +16,7 @@ RUN echo "deb http://http.kali.org/kali kali-rolling main contrib non-free non-f
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Phase 2: 安全工具
-RUN apt-get update \
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
         nmap sqlmap netcat-traditional tcpdump \
         whatweb nuclei \
@@ -23,7 +25,7 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Phase 3: CTF 工具（取证/PWN/逆向）
-RUN apt-get update \
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
         binwalk foremost steghide pngcheck imagemagick \
         ffmpeg sox tshark \
