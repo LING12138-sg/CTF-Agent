@@ -1,0 +1,200 @@
+"""
+Executor Tool Implementations
+===============================
+
+实际工具执行逻辑：bash、web_fetch、web_search。
+被 MCP 服务器调用，而非直接暴露给 LLM。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+from typing import Optional
+
+import requests
+
+_logger = logging.getLogger(__name__)
+
+# ── 安全拦截 ──
+
+BLOCKED_PATTERNS = [
+    "rm -rf /",
+    "rm -rf ~",
+    "mkfs",
+    "dd if=",
+    ":(){",
+    "> /dev/",
+    "| shutdown",
+    "| reboot",
+    "| poweroff",
+    "> /dev/sd",
+]
+
+
+def _is_blocked(command: str) -> str | None:
+    """检查命令是否被拦截，返回匹配的模式或 None"""
+    cmd_lower = command.lower()
+    for pattern in BLOCKED_PATTERNS:
+        if pattern.lower() in cmd_lower:
+            return pattern
+    return None
+
+
+# ── Bash 执行 ──
+
+async def bash(
+    command: str,
+    timeout: int = 60,
+    cwd: Optional[str] = None,
+) -> str:
+    """执行 shell 命令并返回输出
+
+    Args:
+        command: shell 命令
+        timeout: 超时秒数
+        cwd: 工作目录
+
+    Returns:
+        命令输出（stdout + stderr）
+    """
+    blocked = _is_blocked(command)
+    if blocked:
+        return f"[BLOCKED] 命令包含禁止模式: {blocked}"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *(["bash", "-c"] if sys.platform == "win32" else ["bash", "-c"]),
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd or os.getcwd(),
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return f"[TIMEOUT] 命令执行超时 ({timeout}s)"
+
+        parts = []
+        if stdout:
+            parts.append(stdout.decode(errors="replace")[:20000])
+        if stderr:
+            parts.append(f"\n[STDERR]\n{stderr.decode(errors='replace')[:5000]}")
+        if not parts:
+            return "(无输出)"
+
+        return "".join(parts)
+    except FileNotFoundError:
+        return "[ERROR] bash 未找到，请确认 Git Bash 或 WSL 已安装"
+    except Exception as e:
+        return f"[ERROR] {e}"
+
+
+# ── Web Fetch ──
+
+async def web_fetch(url: str, timeout: int = 15) -> str:
+    """获取 URL 内容
+
+    Args:
+        url: 目标 URL
+        timeout: 超时秒数
+
+    Returns:
+        页面文本内容
+    """
+    try:
+        loop = asyncio.get_event_loop()
+
+        def _fetch() -> str:
+            try:
+                resp = requests.get(
+                    url,
+                    timeout=timeout,
+                    verify=False,
+                    allow_redirects=True,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        )
+                    },
+                )
+                return resp.text[:15000]
+            except requests.exceptions.Timeout:
+                return f"[TIMEOUT] 请求超时 ({timeout}s)"
+            except requests.exceptions.ConnectionError as e:
+                return f"[ERROR] 连接失败: {e}"
+            except Exception as e:
+                return f"[ERROR] {e}"
+
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch),
+            timeout=timeout + 5,
+        )
+    except asyncio.TimeoutError:
+        return f"[ERROR] web_fetch 整体超时"
+
+
+# ── Web Search ──
+
+async def web_search(query: str) -> str:
+    """搜索网络信息
+
+    使用 DuckDuckGo Instant Answer API。
+    如需更强大的搜索能力，可扩展为使用 Tavily 等专业搜索服务。
+
+    Args:
+        query: 搜索关键词
+
+    Returns:
+        搜索结果摘要
+    """
+    try:
+        loop = asyncio.get_event_loop()
+
+        def _search() -> str:
+            try:
+                resp = requests.get(
+                    "https://api.duckduckgo.com/",
+                    params={"q": query, "format": "json", "no_html": "1"},
+                    timeout=10,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                data = resp.json()
+                abstract = data.get("AbstractText", "")
+                source = data.get("AbstractSource", "")
+                url = data.get("AbstractURL", "")
+
+                results = []
+                if abstract:
+                    results.append(f"摘要 ({source}): {abstract}")
+                    if url:
+                        results.append(f"来源: {url}")
+
+                # 相关话题
+                related = data.get("RelatedTopics", [])
+                for topic in related[:5]:
+                    if isinstance(topic, dict):
+                        text = topic.get("Text", "")
+                        if text:
+                            results.append(f"- {text}")
+
+                return "\n".join(results) if results else f"未找到 '{query}' 的相关结果"
+            except Exception as e:
+                return f"[ERROR] 搜索失败: {e}"
+
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _search),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        return "[ERROR] 搜索超时"

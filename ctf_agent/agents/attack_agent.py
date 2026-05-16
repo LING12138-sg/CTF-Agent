@@ -128,9 +128,8 @@ IP: {target_info.ip}  端口: {target_info.ports}
 {findings_context}
 
 请按计划执行攻击。你可以使用以下工具：
-- Bash: 执行任意 shell 命令（curl、python 脚本等）
+- Executor: 统一工具网关，提供 bash（shell 命令）/ web_fetch（URL 请求）/ web_search（网络搜索）
 - MCP 工具: tavily（搜索）、sqlmap（SQL注入）、playwright（浏览器）等
-- Read/Write: 读写文件
 
 规则：
 1. 逐步执行，每步报告结果
@@ -160,7 +159,7 @@ IP: {target_info.ip}  端口: {target_info.ports}
             f"启动 SDK 工具 Agent", f"{self.plan.id} | log={log_file or '(none)'}"
         )
 
-        # 创建带工具权限的 LLMBase 实例
+        # 创建带工具权限的 LLMBase 实例（通过 Executor 统一管理工具调用）
         tool_agent = LLMBase(
             model=self._model,
             api_key=self._api_key,
@@ -171,6 +170,7 @@ IP: {target_info.ip}  端口: {target_info.ports}
             agent_label=self.agent_id,
             mcp_servers=self.mcp_path if self.mcp_path else None,
             log_file=log_file or None,
+            use_executor=True,
         )
 
         try:

@@ -47,6 +47,8 @@ class PlanAgent:
     async def analyze_and_plan(self, ctx: ChallengeContext, human_hint: str = "") -> List[AttackPlan]:
         """分析目标并生成攻击计划
 
+        使用持久会话：建立连接 → query（Guidance Loop） → 断开连接。
+
         Args:
             ctx: 当前题目上下文（含目标信息、已有发现）
             human_hint: 人类提供的参考信息或思路
@@ -79,25 +81,45 @@ class PlanAgent:
 你可以使用 Bash、WebFetch、WebSearch 等工具浏览目标、搜索已知漏洞信息。
 分析完成后，输出攻击计划。"""
 
-        # 2. 调用 LLM（结构化输出：工具随便用，输出强制 JSON）
-        log_plan_event("调用 LLM 生成攻击计划（结构化输出）")
-        result = await self.llm.execute_structured(
-            user_message,
-            output_format=PLANS_OUTPUT_SCHEMA,
-            system_prompt=self.system_prompt,
+        # 2. 建立持久会话 + Guidance Loop
+        plans: List[AttackPlan] = []
+        max_rounds = 3
+        guidance = user_message
+
+        await self.llm._ensure_connected(
+            system_prompt=self.system_prompt, output_format=PLANS_OUTPUT_SCHEMA
         )
+        try:
+            for round_idx in range(max_rounds):
+                log_plan_event(f"Guidance Round {round_idx + 1}/{max_rounds}")
+                result = await self.llm.query(guidance, output_format=PLANS_OUTPUT_SCHEMA)
 
-        # 3. 解析结构化输出
-        structured = result.get("structured") or {}
-        plans_data = structured.get("plans", []) if isinstance(structured, dict) else []
-        if not plans_data:
-            log_plan_event("结构化输出为空，回退文本解析", level=logging.WARNING)
-            text = result.get("text", "")
-            plans = self._parse_plans_from_response(text, ctx) if text else []
-        else:
-            plans = self._parse_plans_from_data(plans_data, ctx)
+                structured = result.get("structured") or {}
+                plans_data = structured.get("plans", []) if isinstance(structured, dict) else []
+
+                if plans_data:
+                    plans = self._parse_plans_from_data(plans_data, ctx)
+                    if plans:
+                        break
+
+                # 没有有效计划 → 构造 guidance 重试
+                text = result.get("text", "")
+                if round_idx < max_rounds - 1:
+                    guidance = (
+                        "上一轮没有输出有效的攻击计划。请重新分析目标，"
+                        "并使用工具的返回值制定至少 2 个具体的攻击计划。\n\n"
+                        f"原始目标信息:\n{user_message}\n\n"
+                        f"你上一轮的回复:\n{text[:2000]}"
+                    )
+                else:
+                    # 最后一轮仍失败，回退文本解析
+                    log_plan_event("Guidance Loop 耗尽，回退文本解析", level=logging.WARNING)
+                    plans = self._parse_plans_from_response(text, ctx) if text else []
+        finally:
+            # 3. 确保持久会话始终断开
+            await self.llm.reset_session()
+
         log_plan_event(f"生成 {len(plans)} 个攻击计划", f"plans={[p.title for p in plans]}")
-
         return plans
 
     async def review_findings(
