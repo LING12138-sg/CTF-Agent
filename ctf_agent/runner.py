@@ -36,6 +36,7 @@ from .types import (
 )
 from .utils.http import get_with_retry, probe_endpoint
 from .utils.recon import nmap_scan, enrich_tech_stack
+from .sandbox import ensure_sandbox, shutdown_sandbox
 
 
 class Runner:
@@ -98,6 +99,27 @@ class Runner:
         log_system_event(f"目标: {self.target_url}")
         log_system_event("=" * 60)
 
+        # ==================== Phase 0: 沙箱初始化 ====================
+        # Docker 容器创建/拉取可能耗时，在线程中执行
+        loop = asyncio.get_event_loop()
+        try:
+            sandbox_status = await loop.run_in_executor(None, ensure_sandbox)
+            log_system_event(f"沙箱: {sandbox_status}")
+        except Exception as e:
+            log_system_event(f"沙箱初始化失败: {e}", level=logging.WARNING)
+            log_system_event("继续使用本地执行（无隔离）")
+
+        try:
+            return await self._run_pipeline_inner()
+        finally:
+            try:
+                await loop.run_in_executor(None, shutdown_sandbox)
+                log_system_event("沙箱已关闭")
+            except Exception:
+                pass
+
+    async def _run_pipeline_inner(self) -> Dict:
+        """Pipeline 主循环体（由 _run_pipeline 的 try/finally 保护）"""
         # ==================== Phase 1: 自动侦察 ====================
         await self._do_recon()
 

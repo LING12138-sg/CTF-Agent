@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "burp": {
+      "type": "sse",
+      "url": "http://192.168.43.45:9876"
+    },
+    "tavily": {
+      "command": "npx",
+      "args": ["-y", "tavily-mcp"],
+      "env": {
+        "TAVILY_API_KEY": "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"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "Godzilla": {
+      "type": "http",
+      "url": "http://192.168.43.45:9527/mcp"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@latest", "."]
+    }
+  }
+}

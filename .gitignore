@@ -1,5 +1,4 @@
 .env
-.mcp.json
 .venv/
 .idea/
 .claude/

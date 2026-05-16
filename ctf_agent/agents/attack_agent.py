@@ -140,7 +140,6 @@ class AttackAgent(BaseAgent):
 
 ## 当前题目路径
 题目标识: {self.ctx.challenge_id}
-Python: .venv/Scripts/python.exe（勿用 python3/python）
 脚本目录: scripts/{self.ctx.challenge_id}/
 Writeup: wp/{self.ctx.challenge_id}/
 附件: challenges/{self.ctx.challenge_id}/"""

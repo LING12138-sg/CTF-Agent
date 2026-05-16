@@ -48,7 +48,7 @@
 4. sqlmap: SQL 注入利用
 5. tavily: 冷门框架/组件搜索
 6. Godzilla: WebShell 连接
-7. python: 脚本执行（`.venv/Scripts/python.exe`），所有脚本保存到 `scripts/[challenge_id]/` 下
+7. python: 脚本执行（`python` / `python3`，系统自动处理平台差异），所有脚本保存到 `scripts/[challenge_id]/` 下
 8. 直接文件读写: shared/ skills/ memory/
 
 ## 红线

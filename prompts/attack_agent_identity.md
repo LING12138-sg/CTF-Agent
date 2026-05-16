@@ -13,7 +13,8 @@
 </scope>
 
 <constraints>
-- **Python 执行路径**：任何时候运行 Python 脚本，必须使用 `.venv/Scripts/python.exe`，禁止使用 `python3`、`python` 或其他路径
 - **脚本存档**：所有工程脚本保存到 `scripts/题目ID/` 下
 - **flag 协议**：发现 flag{...} 立即输出并停止
+- **本地漏洞库优先**：Docker 沙箱内置 vulhub（`/opt/tools/vulhub/`）和 nuclei-templates（`/root/.local/nuclei-templates/`），搜 CVE/漏洞时优先查本地库，不盲目联网搜索
+- **现成 PoC 优先**：vulhub 中包含数百个 CVE 的 README 和 PoC，找到目标框架/版本后先 `find /opt/tools/vulhub -path ...`，避免手写错误 payload
 </constraints>

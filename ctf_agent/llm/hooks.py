@@ -369,9 +369,10 @@ def create_pre_tool_use_hook(
                     }
                 }
 
-        # TODO 后期转到Linux这段代码可以删掉了，通过docker启用
-        # ── Python 路径修正（python3/python → .venv/Scripts/python.exe） ──
-        if tool_name == "Bash" and isinstance(tool_input, dict):
+        # ── Python 路径修正（仅 Windows：python3 → .venv/Scripts/python.exe） ──
+        # Linux/Docker 下 python3 原生可用，不需要重写
+        import sys as _sys
+        if _sys.platform == "win32" and tool_name == "Bash" and isinstance(tool_input, dict):
             cmd = tool_input.get("command", "")
             if isinstance(cmd, str) and _RE_PYTHON_CMD.search(cmd):
                 corrected = _RE_PYTHON_CMD.sub(

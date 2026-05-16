@@ -81,12 +81,32 @@ class PathConfig:
 
 
 @dataclass
+class SandboxConfig:
+    """沙箱执行器配置"""
+
+    mode: str = "auto"           # auto / docker / local
+    image: str = "kalilinux/kali-rolling"
+    container_name: str = "ctf-agent-sandbox"
+    mount_target: str = "/root/agent-work"
+
+    @classmethod
+    def from_env(cls) -> "SandboxConfig":
+        return cls(
+            mode=os.getenv("SANDBOX_MODE", "auto"),
+            image=os.getenv("SANDBOX_IMAGE", "kalilinux/kali-rolling"),
+            container_name=os.getenv("SANDBOX_CONTAINER", "ctf-agent-sandbox"),
+            mount_target=os.getenv("SANDBOX_MOUNT_TARGET", "/root/agent-work"),
+        )
+
+
+@dataclass
 class AgentConfig:
     """统一配置类"""
 
     llm: LLMConfig
     runner: RunnerConfig
     paths: PathConfig
+    sandbox: SandboxConfig
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -96,6 +116,7 @@ class AgentConfig:
             llm=llm,
             runner=RunnerConfig.from_env(),
             paths=PathConfig(),
+            sandbox=SandboxConfig.from_env(),
         )
 
 
