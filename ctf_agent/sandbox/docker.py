@@ -303,4 +303,5 @@ class DockerExecutor(BaseExecutor):
         )
 
     def __del__(self):
-        self._pool.shutdown(wait=False)
+        if hasattr(self, '_pool'):
+            self._pool.shutdown(wait=False)
