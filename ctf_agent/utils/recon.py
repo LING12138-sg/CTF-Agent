@@ -78,7 +78,10 @@ async def nmap_scan(
     timeout: int = 120,
     args: str = "-sV -sC -O --max-retries 2 --min-rate 500",
 ) -> Dict[str, Any]:
-    """执行 nmap 扫描并解析结果
+    """通过沙箱执行 nmap 扫描并解析结果
+
+    通过 get_executor() 在 Docker 容器（或本地）内执行 nmap，
+    不在宿主机直接调 nmap。
 
     Args:
         target: 目标 IP 或域名
@@ -86,54 +89,40 @@ async def nmap_scan(
         args: nmap 参数（默认 -sV -sC -O）
 
     Returns:
-        {
-            "ports": [{"port": int, "protocol": str, "state": str, "service": str, "version": str}],
-            "os": str or "",
-            "os_cpe": str or "",
-            "raw_xml": str,
-            "error": str or None,
-        }
+        ports / os / raw_xml / error
     """
-    # 检查 nmap 是否可用
+    from ..sandbox import get_executor
+
+    loop = asyncio.get_event_loop()
+
+    # 检查 nmap 是否可用（通过沙箱）
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "nmap", "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        check = await loop.run_in_executor(
+            None, lambda: get_executor().execute("nmap --version", timeout=10)
         )
-        await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode != 0:
-            return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": "nmap not available"}
-    except (FileNotFoundError, OSError):
-        log_system_event("nmap 未安装，跳过扫描")
-        return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": "nmap not found (install: apt install nmap / choco install nmap / https://nmap.org)"}
-    except asyncio.TimeoutError:
-        return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": "nmap version check timeout"}
+        if check.exit_code != 0:
+            return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": "nmap not available in sandbox"}
+    except Exception as e:
+        log_system_event(f"nmap 检查失败: {e}", level=logging.WARNING)
+        return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": f"nmap check failed: {e}"}
 
     log_system_event(f"开始 nmap 扫描: {target} ({args})")
 
-    # 输出为 XML 方便解析
     cmd = f"nmap {args} -oX - {target} 2>/dev/null"
-
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash", "-c", cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await loop.run_in_executor(
+            None,
+            lambda: get_executor().execute(cmd, timeout=timeout, caller="nmap_scan"),
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        log_system_event("nmap 扫描超时", level=logging.WARNING)
-        return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": f"timeout ({timeout}s)"}
     except Exception as e:
         log_system_event(f"nmap 扫描异常: {e}", level=logging.WARNING)
         return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": str(e)}
 
-    raw_xml = stdout.decode(errors="replace")
+    raw_xml = result.stdout
+    if result.timed_out:
+        log_system_event("nmap 扫描超时", level=logging.WARNING)
+        return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": f"timeout ({timeout}s)"}
+
     if not raw_xml.strip():
         log_system_event("nmap 无输出", level=logging.WARNING)
         return {"ports": [], "os": "", "os_cpe": "", "raw_xml": "", "error": "empty output"}
