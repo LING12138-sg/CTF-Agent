@@ -66,7 +66,7 @@ async def bash(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            *(["bash", "-c"] if sys.platform == "win32" else ["bash", "-c"]),
+            "bash", "-c",
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -171,8 +171,8 @@ async def record_key_finding(
 async def web_search(query: str) -> str:
     """搜索网络信息
 
-    使用 DuckDuckGo Instant Answer API。
-    如需更强大的搜索能力，可扩展为使用 Tavily 等专业搜索服务。
+    使用 DuckDuckGo HTML 搜索（全文搜索，返回真实结果）。
+    如需更强大的搜索能力，可扩展为 Tavily API。
 
     Args:
         query: 搜索关键词
@@ -180,43 +180,52 @@ async def web_search(query: str) -> str:
     Returns:
         搜索结果摘要
     """
+    import re
+
     try:
         loop = asyncio.get_event_loop()
 
         def _search() -> str:
             try:
-                resp = requests.get(
-                    "https://api.duckduckgo.com/",
-                    params={"q": query, "format": "json", "no_html": "1"},
-                    timeout=10,
-                    headers={"User-Agent": "Mozilla/5.0"},
+                resp = requests.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": query},
+                    timeout=15,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    },
                 )
-                data = resp.json()
-                abstract = data.get("AbstractText", "")
-                source = data.get("AbstractSource", "")
-                url = data.get("AbstractURL", "")
+                html = resp.text
 
                 results = []
-                if abstract:
-                    results.append(f"摘要 ({source}): {abstract}")
-                    if url:
-                        results.append(f"来源: {url}")
+                # 提取搜索结果块
+                for article in re.finditer(
+                    r'<a rel="nofollow" class="result__a" href="(.*?)">(.*?)</a>'
+                    r'.*?<a class="result__snippet"(.*?)>(.*?)</a>',
+                    html, re.DOTALL,
+                ):
+                    url = article.group(1)
+                    title = re.sub(r"<[^>]+>", "", article.group(2)).strip()
+                    snippet = re.sub(r"<[^>]+>", "", article.group(4)).strip()
+                    results.append(f"[{title}]({url})\n  {snippet}")
+                    if len(results) >= 8:
+                        break
 
-                # 相关话题
-                related = data.get("RelatedTopics", [])
-                for topic in related[:5]:
-                    if isinstance(topic, dict):
-                        text = topic.get("Text", "")
-                        if text:
-                            results.append(f"- {text}")
-
-                return "\n".join(results) if results else f"未找到 '{query}' 的相关结果"
+                if results:
+                    return f"搜索结果: '{query}'\n\n" + "\n\n".join(results)
+                return f"未找到 '{query}' 的相关结果"
+            except requests.exceptions.Timeout:
+                return f"[TIMEOUT] 搜索超时 (15s)"
             except Exception as e:
                 return f"[ERROR] 搜索失败: {e}"
 
         return await asyncio.wait_for(
             loop.run_in_executor(None, _search),
-            timeout=15,
+            timeout=20,
         )
     except asyncio.TimeoutError:
         return "[ERROR] 搜索超时"

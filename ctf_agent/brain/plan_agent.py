@@ -22,6 +22,10 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common import log_plan_event
+from ..knowledge import (
+    format_kb_results, format_wiki_results,
+    query_kb, query_wiki,
+)
 from ..llm.schemas import PLANS_OUTPUT_SCHEMA
 from ..types import (
     AttackPlan, ChallengeContext, Finding, FindingType,
@@ -59,13 +63,33 @@ class PlanAgent:
         log_plan_event(f"开始分析: {ctx.challenge_id}", f"target={ctx.target.url}")
 
         # 1. 构建 LLM 输入
-        target_summary = self._build_target_summary(ctx)
+        if ctx.compiled_recon:
+            target_summary = ctx.compiled_recon
+        else:
+            target_summary = self._build_target_summary(ctx)
         findings_summary = self._build_findings_summary(ctx)
         existing_plans = self._build_existing_plans_summary(ctx)
 
+        # 知识库关联经验（raw + wiki）
+        ts = ctx.tech_stack
+        kb_results = query_kb(server=ts.server, language=ts.language, top_k=3)
+        kb_section = ""
+        if kb_results:
+            kb_section = "\n# 相关历史经验\n" + format_kb_results(kb_results) + "\n"
+            log_plan_event(f"知识库命中 {len(kb_results)} 条相关经验")
+
+        # Wiki 技术页面（按 tags 匹配通用攻击方法）
+        kb_tags = [t for t in [ts.language, ts.server, ts.framework] if t]
+        wiki_results = query_wiki(tags=kb_tags, top_k=3)
+        wiki_section = ""
+        if wiki_results:
+            wiki_section = "\n" + format_wiki_results(wiki_results) + "\n"
+            log_plan_event(f"Wiki 命中 {len(wiki_results)} 条技术页面")
+
         user_message = f"""# 目标信息
 {target_summary}
-
+{kb_section}
+{wiki_section}
 # 已有发现
 {findings_summary}
 
@@ -78,16 +102,22 @@ class PlanAgent:
 
         user_message += """
 请分析以上目标并制定攻击计划。
-你可以使用 Bash、WebFetch、WebSearch 等工具浏览目标、搜索已知漏洞信息。
+
+你可以使用 WebSearch 搜索目标相关的已知漏洞信息。
+**你绝不直接对目标执行任何攻击操作**（不 curl、不 sqlmap、不探测 payload）。
+发现漏洞线索后，将其写入攻击计划中，由 Attack Agent 去执行。
+
 分析完成后，输出攻击计划。"""
 
         # 2. 持久会话 + 框架级 Guidance Loop
-        # 挂载 Guidance 钩子到 llm 实例，query() 内部自动循环
-        # 先保存原始方法，finally 中恢复
+        # 先保存原始设置，finally 中恢复
         _orig_is_solved = self.llm._guidance_is_solved
         _orig_build = self.llm._guidance_build_query
         _orig_max_rounds = self.llm.max_guidance_rounds
+        _orig_disallowed = self.llm.disallowed_tools
 
+        # Plan Agent 只用 WebSearch 做信息搜集，不直接与目标交互
+        self.llm.disallowed_tools = list(set(_orig_disallowed) | {"Bash", "WebFetch"})
         self.llm.max_guidance_rounds = 3
         self.llm._guidance_is_solved = self._guidance_check_solved
         self.llm._guidance_build_query = self._guidance_build_query
@@ -113,11 +143,12 @@ class PlanAgent:
                     plans = self._parse_plans_from_response(text, ctx)
 
         finally:
-            # 4. 清理：断开持久会话 + 恢复 LLM 默认引导方法
+            # 4. 清理：断开持久会话 + 恢复 LLM 默认设置
             await self.llm.reset_session()
             self.llm.max_guidance_rounds = _orig_max_rounds
             self.llm._guidance_is_solved = _orig_is_solved
             self.llm._guidance_build_query = _orig_build
+            self.llm.disallowed_tools = _orig_disallowed
 
         log_plan_event(f"生成 {len(plans)} 个攻击计划", f"plans={[p.title for p in plans]}")
         return plans

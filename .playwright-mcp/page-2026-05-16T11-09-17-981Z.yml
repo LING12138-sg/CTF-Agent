@@ -1,0 +1,91 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic:
+      - img "logo" [ref=e4]
+      - heading "blog" [level=1] [ref=e5]
+    - navigation [ref=e6]:
+      - list:
+        - listitem [ref=e7]:
+          - link "HOME" [ref=e8] [cursor=pointer]:
+            - /url: "?page=home"
+        - listitem [ref=e9]:
+          - link "Login" [ref=e10] [cursor=pointer]:
+            - /url: "?page=login"
+        - listitem [ref=e11]:
+          - link "Works" [ref=e12] [cursor=pointer]:
+            - /url: "#work"
+  - separator [ref=e13]
+  - banner [ref=e14]:
+    - heading "Hello there, I'm \"Longlone\". Welcome to my fake blog!" [level=1] [ref=e15]
+  - generic [ref=e18]:
+    - img "image 1" [ref=e20]
+    - img "image 2" [ref=e22]
+    - img "image 3" [ref=e24]
+  - complementary [ref=e25]:
+    - heading "about me" [level=3] [ref=e26]
+    - paragraph [ref=e27]: Hey there, my name is "Longlone". My creed is try more, study more.
+  - complementary [ref=e28]:
+    - heading "my blog" [level=3] [ref=e29]
+    - paragraph [ref=e30]: Welcome to my blog, please enjoy browsing anywhere you want!
+  - generic [ref=e31]:
+    - generic [ref=e32]:
+      - link "image 1" [ref=e33] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 1" [ref=e34]
+      - heading "Skies Of Spain" [level=3] [ref=e35]
+      - paragraph [ref=e36]: photography
+    - generic [ref=e37]:
+      - link "image 2" [ref=e38] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 2" [ref=e39]
+      - heading "Beautiful Bahrain" [level=3] [ref=e40]
+      - paragraph [ref=e41]: photography
+    - generic [ref=e42]:
+      - link "image 3" [ref=e43] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 3" [ref=e44]
+      - heading "Wild Stripes" [level=3] [ref=e45]
+      - paragraph [ref=e46]: photo manipulation
+    - generic [ref=e47]:
+      - link "image 4" [ref=e48] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 4" [ref=e49]
+      - heading "Lazy Days" [level=3] [ref=e50]
+      - paragraph [ref=e51]: photo manipulation
+    - generic [ref=e52]:
+      - link "image 5" [ref=e53] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 5" [ref=e54]
+      - heading "Trapped" [level=3] [ref=e55]
+      - paragraph [ref=e56]: photography
+    - generic [ref=e57]:
+      - link "image 6" [ref=e58] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 6" [ref=e59]
+      - heading "Quad-Core" [level=3] [ref=e60]
+      - paragraph [ref=e61]: photography
+    - generic [ref=e62]:
+      - link "image 7" [ref=e63] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 7" [ref=e64]
+      - heading "Retro Blast" [level=3] [ref=e65]
+      - paragraph [ref=e66]: illustration
+    - generic [ref=e67]:
+      - link "image 8" [ref=e68] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 8" [ref=e69]
+      - heading "Gates Of The Sun" [level=3] [ref=e70]
+      - paragraph [ref=e71]: photography
+    - generic [ref=e72]:
+      - link "image 9" [ref=e73] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 9" [ref=e74]
+      - heading "Winter Touch" [level=3] [ref=e75]
+      - paragraph [ref=e76]: photography
+    - generic [ref=e77]:
+      - link "image 10" [ref=e78] [cursor=pointer]:
+        - /url: work-template.html
+        - img "image 10" [ref=e79]
+      - heading "Burn" [level=3] [ref=e80]
+      - paragraph [ref=e81]: photo manipulation
+  - heading "Thanks for looking at my new website!" [level=3] [ref=e83]

@@ -202,6 +202,7 @@ class ChallengeContext:
     plans: List[AttackPlan] = field(default_factory=list)
     agent_results: List[AgentResult] = field(default_factory=list)
     notes: str = ""
+    compiled_recon: str = ""  # PromptCompiler 输出的结构化 XML
     created_at: str = field(default_factory=_now_bjt)
     updated_at: str = field(default_factory=_now_bjt)
 
@@ -240,6 +241,7 @@ class ChallengeContext:
             "plans": [p.to_dict() for p in self.plans],
             "agent_results": [r.to_dict() for r in self.agent_results],
             "notes": self.notes,
+            "compiled_recon": self.compiled_recon,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -277,6 +279,7 @@ class ChallengeContext:
             r.findings = [Finding(**f) for f in r_data.get("findings", [])]
             ctx.agent_results.append(r)
         ctx.notes = data.get("notes", "")
+        ctx.compiled_recon = data.get("compiled_recon", "")
         ctx.created_at = data.get("created_at", _now_bjt())
         ctx.updated_at = data.get("updated_at", _now_bjt())
         return ctx

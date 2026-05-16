@@ -114,7 +114,34 @@ PLANS_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
+# ============== Wiki Compiler 输出 Schema ==============
+#
+# Wiki Compiler 将 raw/ 经验编译为结构化的 Wiki 技术页面。
+#
+WIKI_PAGE_OUTPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "Wiki 页面标题"},
+        "slug": {"type": "string", "description": "URL 友好的 slug"},
+        "tags": {
+            "type": "array", "items": {"type": "string"},
+            "description": "技术标签列表",
+        },
+        "triggers": {
+            "type": "array", "items": {"type": "string"},
+            "description": "触发关键词",
+        },
+        "related": {
+            "type": "array", "items": {"type": "string"},
+            "description": "相关页面 slug",
+        },
+        "body": {"type": "string", "description": "Wiki 正文（Markdown）"},
+    },
+    "required": ["title", "body"],
+}
+
+
 __all__ = [
     "ORCHESTRATOR_OUTPUT_SCHEMA", "AgentOutputSchema",
-    "PLANS_OUTPUT_SCHEMA",
+    "PLANS_OUTPUT_SCHEMA", "WIKI_PAGE_OUTPUT_SCHEMA",
 ]

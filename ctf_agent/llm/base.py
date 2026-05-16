@@ -29,10 +29,12 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     UserMessage,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
     ToolResultBlock,
+    HookMatcher,
 )
 
 from ..common import log_system_event
@@ -110,6 +112,12 @@ class LLMBase:
         # Executor MCP 服务器（懒加载）
         self._executor_server = None
 
+        # 反射追踪器（懒加载，用于 hooks）
+        self._reflection_tracker = None
+
+        # Hooks 缓存
+        self._hooks_built = None
+
     # ── 持久会话管理 ──
 
     async def _ensure_connected(
@@ -143,7 +151,9 @@ class LLMBase:
                 pass
             self._persistent_client = None
             self._persistent_session_active = False
-            log_system_event(f"{self._tag} 持久会话已关闭")
+        self._reflection_tracker = None
+        self._hooks_built = None
+        log_system_event(f"{self._tag} 持久会话已关闭")
 
     async def query(
         self,
@@ -376,8 +386,10 @@ class LLMBase:
         if mcp_servers:
             kwargs["mcp_servers"] = mcp_servers
 
-        if self.hooks is not None:
-            kwargs["hooks"] = self.hooks
+        # ── Hooks ──
+        hooks = self._build_hooks()
+        if hooks is not None:
+            kwargs["hooks"] = hooks
         if self.max_thinking_tokens is not None:
             kwargs["max_thinking_tokens"] = self.max_thinking_tokens
 
@@ -386,6 +398,64 @@ class LLMBase:
             kwargs["output_format"] = {"type": "json_schema", "schema": fmt}
 
         return ClaudeAgentOptions(**kwargs)
+
+    # ── Hooks 构建 ──
+
+    def _build_hooks(self):
+        """构建 PreToolUse/PostToolUse 钩子配置
+
+        当 use_executor=True 时自动构建完整 hooks。
+        否则使用用户传入的 hooks（如果有）。
+        """
+        if not self.use_executor:
+            return self.hooks
+
+        # 使用缓存
+        if self._hooks_built is not None:
+            return self._hooks_built
+
+        from .hooks import (
+            create_pre_tool_use_hook,
+            create_post_tool_use_hook,
+            create_subagent_stop_hook,
+        )
+        from .reflection_tracker import ReflectionTracker
+
+        # 懒加载反射追踪器
+        if self._reflection_tracker is None:
+            self._reflection_tracker = ReflectionTracker(shared_dir=self.shared_dir)
+
+        hooks = {
+            "PreToolUse": [
+                HookMatcher(hooks=[
+                    create_pre_tool_use_hook(
+                        shared_dir=self.shared_dir,
+                        allowed_tools=self.allowed_tools or None,
+                        disallowed_tools=self.disallowed_tools or None,
+                        tools_requiring_args=(),
+                        reflection_tracker=self._reflection_tracker,
+                    )
+                ])
+            ],
+            "PostToolUse": [
+                HookMatcher(hooks=[
+                    create_post_tool_use_hook(
+                        shared_dir=self.shared_dir,
+                        reflection_tracker=self._reflection_tracker,
+                        agent_name=self.agent_label,
+                    )
+                ])
+            ],
+            "SubagentStop": [
+                HookMatcher(hooks=[
+                    create_subagent_stop_hook(
+                        agent_name=self.agent_label,
+                    )
+                ])
+            ],
+        }
+        self._hooks_built = hooks
+        return hooks
 
     # ── 执行方法 ──
 
@@ -433,12 +503,38 @@ class LLMBase:
                         if isinstance(item, ToolResultBlock):
                             self._write_tool_result(item.content, item.is_error)
 
+            elif isinstance(msg, SystemMessage):
+                # Compact 检测：CLI auto-compact 触发时发送 status="compacting"
+                if (
+                    hasattr(msg, 'subtype') and msg.subtype == "status"
+                    and hasattr(msg, 'data') and isinstance(msg.data, dict)
+                    and msg.data.get("status") == "compacting"
+                    and self._reflection_tracker is not None
+                ):
+                    self._reflection_tracker.enter_compact_recovery()
+                    log_system_event(
+                        "Compact detected, entering recovery mode "
+                        "(will block write tools until context is restored)",
+                    )
+                    # 异步编译 compact_handoff.md
+                    try:
+                        from .compact import compile_handoff, log_compact_boundary
+                        log_compact_boundary(self.shared_dir, "start")
+                        handoff = compile_handoff(self.shared_dir)
+                        if handoff:
+                            log_system_event(f"ProgressCompiler: handoff written to {handoff}")
+                    except Exception as exc:
+                        log_system_event(f"ProgressCompiler 编译失败: {exc}")
+
             elif isinstance(msg, ResultMessage):
+                # ResultMessage 不一定有 error_message 属性
+                err_msg = getattr(msg, 'error_message', None) or msg.result or ""
+
                 if self.log_file:
                     if msg.is_error:
                         self._write(
                             f"\n[ERR] [{self.agent_label or 'LLM'}] "
-                            f"错误: {msg.error_message or msg.result}"
+                            f"错误: {err_msg}"
                         )
                     else:
                         cost = msg.total_cost_usd
@@ -461,11 +557,11 @@ class LLMBase:
                 if msg.is_error:
                     log_system_event(
                         f"{self._tag} LLM 执行错误",
-                        msg.error_message or msg.result or "未知",
+                        err_msg or "未知",
                         level=logging.WARNING,
                     )
                 is_error = msg.is_error
-                error_message = (msg.error_message or msg.result) if msg.is_error else None
+                error_message = err_msg if msg.is_error else None
                 break
 
         return {

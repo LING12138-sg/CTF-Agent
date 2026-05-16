@@ -74,6 +74,52 @@ def create_executor_server(
 
     @mcp.tool(
         description=(
+            "搜索历史解题经验知识库。根据目标技术栈（server/language/tags）查找类似题目的"
+            "攻击方法和攻击链。同时返回 Wiki 技术页面（按 tags 匹配通用攻击方法）。"
+        )
+    )
+    async def kb_search(
+        server: str = "",
+        language: str = "",
+        tags: str = "",
+        top_k: int = 5,
+    ) -> str:
+        """Search knowledge base for historical experience + wiki techniques
+
+        Args:
+            server: Target server (e.g. openresty, nginx, apache)
+            language: Programming language (e.g. PHP, Java, Python)
+            tags: Comma-separated tags (e.g. lfi, sqli, rce)
+            top_k: Number of results (default 5)
+        """
+        from ..knowledge import (
+            format_kb_results, format_wiki_results,
+            query_kb, query_wiki,
+        )
+
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+        # 1. 查 raw 经验
+        raw_results = query_kb(server=server, language=language, tags=tag_list, top_k=top_k)
+        raw_section = format_kb_results(raw_results) if raw_results else ""
+
+        # 2. 查 wiki 页面
+        wiki_results = query_wiki(tags=tag_list, top_k=top_k)
+        wiki_section = format_wiki_results(wiki_results) if wiki_results else ""
+
+        # 3. 合并
+        parts = []
+        if raw_section:
+            parts.append(raw_section)
+        if wiki_section:
+            parts.append(wiki_section)
+
+        if not parts:
+            return "知识库未找到相关历史经验或 Wiki 技术页面。"
+        return "\n\n".join(parts)
+
+    @mcp.tool(
+        description=(
             "记录关键发现。在发现漏洞、凭据、重要信息或确认死胡同时调用此工具。"
             "持久化到 findings.log 和 progress.md，供其他 Agent 和评审流程使用。"
         )

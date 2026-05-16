@@ -1,0 +1,19 @@
+- generic [ref=e5]:
+  - generic [ref=e8]:
+    - heading "欢迎登录" [level=1] [ref=e10]
+    - paragraph [ref=e11]: —— 博客后台 ——
+  - generic [ref=e14]:
+    - generic [ref=e15]:
+      - textbox "用户名" [ref=e17]
+      - textbox "密码" [ref=e19]
+      - button "登录" [ref=e20] [cursor=pointer]
+      - generic:
+        - generic [ref=e21]:
+          - checkbox "自动登录" [ref=e22]
+          - generic [ref=e23]: 自动登录
+        - generic [ref=e24]:
+          - checkbox "记住密码" [ref=e25]
+          - generic [ref=e26]: 记住密码
+    - text: 没有账号?
+    - link "不给注册" [ref=e27] [cursor=pointer]:
+      - /url: "#"

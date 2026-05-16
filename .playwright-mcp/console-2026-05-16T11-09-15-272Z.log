@@ -1,0 +1,11 @@
+[    1064ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/http//fonts.googleapis.com/css?family=Lato:300,400,700|Cookie:0
+[    1110ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/https//ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js:0
+[    1244ms] ReferenceError: jQuery is not defined
+    at http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/scripts/jquery.carouFredSel-5.5.2.js:2692:4
+[    1244ms] ReferenceError: jQuery is not defined
+    at http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/scripts/jquery.easing.1.3.js:39:1
+[    1245ms] ReferenceError: jQuery is not defined
+    at http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/scripts/jquery.form.js:911:4
+[    1245ms] ReferenceError: $ is not defined
+    at http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/scripts/scripts.js:2:13
+[    2801ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/favicon.ico:0

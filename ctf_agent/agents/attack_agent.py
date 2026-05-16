@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ..brain.prompts import get_attack_prompt
 from ..common import log_attack_event, log_finding_event, now_str
 from ..llm.base import LLMBase
 from ..types import (
@@ -118,9 +119,9 @@ class AttackAgent(BaseAgent):
                 for f in self.ctx.findings[-5:]
             )
 
-        user_message = f"""目标: {target_info.url}
-IP: {target_info.ip}  端口: {target_info.ports}
-技术栈: {self.ctx.tech_stack.server} / {self.ctx.tech_stack.framework}
+        user_message = f"""## 目标
+{target_info.url} | IP: {target_info.ip} | 端口: {target_info.ports}
+{self._build_tech_guidance()}
 
 ## 攻击计划
 标题: {self.plan.title}
@@ -128,29 +129,22 @@ IP: {target_info.ip}  端口: {target_info.ports}
 方法: {self.plan.approach}
 {findings_context}
 
-请按计划执行攻击。你可以使用以下工具：
-- Executor: 统一工具网关，提供 bash（shell 命令）/ web_fetch（URL 请求）/ web_search（网络搜索）
-- record_key_finding: 记录关键发现（漏洞、凭据、死胡同），持久化写入 findings.log
-- MCP 工具: tavily（搜索）、sqlmap（SQL注入）、playwright（浏览器）等
-
-规则：
+## 规则
 1. 逐步执行，每步报告结果
-2. 如果直接方法不奏效，尝试 2-3 个变体
-3. 找到 flag{{...}} 时，用以下格式输出：FOUND_FLAG: flag{{...}}
-4. 所有尝试都失败时，输出：GIVE_UP: 原因
-5. 执行过程中发现有用的信息（端点、凭据等），用 FINDING: 类型 | 描述 的格式输出
-6. 重要发现（漏洞确认、凭据、死胡同、关键信息）务必使用 record_key_finding 工具记录"""
+2. 初始方法不奏效时尝试 2-3 个变体
+3. 找到 flag{{...}} → `FOUND_FLAG: flag{{...}}`
+4. 全部失败 → `GIVE_UP: 原因`
+5. 重要发现用 record_key_finding 记录
 
-        system_prompt = f"""你是 CTF Attack Agent。被分配了 Plan {self.plan.id}: {self.plan.title}.
+## 当前题目路径
+题目标识: {self.ctx.challenge_id}
+Python: .venv/Scripts/python.exe（勿用 python3/python）
+脚本目录: scripts/{self.ctx.challenge_id}/
+Writeup: wp/{self.ctx.challenge_id}/
+附件: challenges/{self.ctx.challenge_id}/"""
 
-策略：
-1. 先用 Bash（curl 等）探测目标端点
-2. 根据响应调整 Payload
-3. 尝试变体但不纠结 —— 如果 3 次尝试都无效就 GIVE_UP
-4. 其他 Agent 可能并行执行不同 Plan，他们找到 Flag 时你也会收到通知
-5. 有重要发现时 call record_key_finding（漏洞、凭据、死胡同、关键信息等都记上）
-
-{self._build_tech_guidance()}"""
+        # system_prompt 从 prompts/ 文件加载（纯静态）
+        system_prompt = get_attack_prompt()
 
         # 构造实时日志文件路径（每个 Agent 独立，赛马不冲突）
         log_file = ""

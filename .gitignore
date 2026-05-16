@@ -3,6 +3,7 @@
 .venv/
 .idea/
 .claude/
+scripts/
 mcp_server/
 shared/logs
 shared/state

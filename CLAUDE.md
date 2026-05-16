@@ -37,8 +37,8 @@
 
 - `shared/state/{id}.json` — ChallengeContext 持久化
 - `shared/logs/` — 执行日志
-- `shared/recon/` — 侦察报告
-- `shared/exploits/` — 利用记录
+- `wp/[challenge_id]/` — 成功后的 Writeup（利用链 + exp 脚本）
+- `challenges/[challenge_id]/` — 题目附件（解压分析后的文件）
 
 ## 可用工具
 
@@ -48,7 +48,7 @@
 4. sqlmap: SQL 注入利用
 5. tavily: 冷门框架/组件搜索
 6. Godzilla: WebShell 连接
-7. python: 脚本执行（.venv\\Scripts\\python.exe）
+7. python: 脚本执行（`.venv/Scripts/python.exe`），所有脚本保存到 `scripts/[challenge_id]/` 下
 8. 直接文件读写: shared/ skills/ memory/
 
 ## 红线

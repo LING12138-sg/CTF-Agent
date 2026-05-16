@@ -1,0 +1,7 @@
+[    1003ms] TypeError: $.cookie is not a function
+    at HTMLDocument.<anonymous> (http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/js/front.js:154:11)
+    at c (https://libs.baidu.com/jquery/1.10.2/jquery.min.js:4:26036)
+    at Object.fireWith [as resolveWith] (https://libs.baidu.com/jquery/1.10.2/jquery.min.js:4:26840)
+    at x.ready (https://libs.baidu.com/jquery/1.10.2/jquery.min.js:4:3305)
+    at HTMLDocument.q (https://libs.baidu.com/jquery/1.10.2/jquery.min.js:4:717)
+[    1003ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ http://672e43a7-f8aa-49c4-9681-ded07b13ea14.node5.buuoj.cn:81/index.php?page=login:0

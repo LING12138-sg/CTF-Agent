@@ -25,7 +25,9 @@ from typing import Dict, List, Optional
 from .agents.attack_agent import AttackAgent
 from .agents.quick_check import QuickCheckAgent
 from .brain.plan_agent import PlanAgent
+from .brain.prompt_compiler import compile_recon
 from .common import log_finding_event, log_system_event, now_str
+from .knowledge.writer import write_experience
 from .config import AgentConfig, LLMConfig, get_default_state_path
 from .llm.base import LLMBase
 from .types import (
@@ -133,13 +135,15 @@ class Runner:
                 if r.flag:
                     log_finding_event(f"Flag 已找到!", r.flag)
                     self._save_state()
-                    return {
+                    result = {
                         "success": True,
                         "flag": r.flag,
                         "agent": r.agent_id,
                         "plan": r.plan_id,
                         "summary": r.summary,
                     }
+                    write_experience(self.ctx, result)
+                    return result
 
             # Step 4: Plan Agent 评审
             review = await self.plan_agent.review_findings(self.ctx, new_findings)
@@ -154,6 +158,14 @@ class Runner:
         flag = self.ctx.get_flag()
         self._save_state()
 
+        result = {
+            "success": bool(flag),
+            "flag": flag,
+            "findings_count": len(self.ctx.findings),
+            "plans_tried": len(self.ctx.plans),
+            "agent_results": len(self.ctx.agent_results),
+        }
+
         log_system_event("=" * 60)
         if flag:
             log_system_event(f"Flag: {flag}")
@@ -161,13 +173,8 @@ class Runner:
             log_system_event("未找到 Flag")
         log_system_event("=" * 60)
 
-        return {
-            "success": bool(flag),
-            "flag": flag,
-            "findings_count": len(self.ctx.findings),
-            "plans_tried": len(self.ctx.plans),
-            "agent_results": len(self.ctx.agent_results),
-        }
+        write_experience(self.ctx, result)
+        return result
 
     async def _do_recon(self):
         """自动侦察阶段
@@ -188,19 +195,28 @@ class Runner:
         headers = result.get("headers", {})
         server = headers.get("Server", "")
         content_type = headers.get("Content-Type", "")
+        powered_by = headers.get("X-Powered-By", "")
 
         self.ctx.tech_stack.server = server
 
-        if "php" in server.lower():
+        if "php" in (server + powered_by).lower():
             self.ctx.tech_stack.language = "PHP"
-        elif "python" in content_type.lower() or "wsgi" in server.lower():
+        elif "python" in (content_type + powered_by).lower() or "wsgi" in server.lower():
             self.ctx.tech_stack.language = "Python"
-        elif "java" in server.lower() or "tomcat" in server.lower():
+        elif "java" in server.lower() or "tomcat" in server.lower() or "java" in powered_by.lower():
             self.ctx.tech_stack.language = "Java"
         elif "go" in server.lower() or "gin" in server.lower():
             self.ctx.tech_stack.language = "Go"
+        elif "asp" in (server + powered_by).lower():
+            self.ctx.tech_stack.language = "ASP.NET"
 
         log_system_event(f"技术栈: {self.ctx.tech_stack.server} / {self.ctx.tech_stack.language}")
+
+        # 3. PromptCompiler: 将侦察数据编译为结构化 XML
+        compiled = await compile_recon(self.llm, self.ctx)
+        if compiled:
+            self.ctx.compiled_recon = compiled
+            log_system_event(f"PromptCompiler 输出 {len(compiled)} 字符 XML")
 
     async def _race_attackers(self, plans: List[AttackPlan]) -> List[AgentResult]:
         """多个 Attack Agent 并行执行（赛马）
