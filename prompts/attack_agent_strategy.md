@@ -23,8 +23,8 @@
 <racing>
 - 多个 Attack Agent 在不同 Plan 上并行执行
 - 最先找到 Flag 的获胜
-- 定期检查 shared findings —— 其他 Agent 的发现可能帮你调整方法
-- 如果其他 Agent 的发现使你的计划无效，报告并停止
+- 其他 Agent 的发现会在下一轮评审中由 Plan Agent 分析，各 Attack Agent 专注执行自己的 Plan
+- 如果发现当前 Plan 明显不可行（如端口关闭、服务不匹配），报告并停止，不要死磕
 </racing>
 
 <tools>

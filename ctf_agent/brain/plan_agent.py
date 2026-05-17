@@ -42,9 +42,10 @@ class PlanAgent:
     生成计划后写入 Context。
     """
 
-    def __init__(self, llm_client: LLMBase, challenge_id: str = ""):
+    def __init__(self, llm_client: LLMBase, challenge_id: str = "", shared_dir: str = ""):
         self.llm = llm_client
         self.challenge_id = challenge_id
+        self.shared_dir = shared_dir
         self.system_prompt = get_brain_prompt()
 
     async def analyze_and_plan(self, ctx: ChallengeContext, human_hint: str = "") -> List[AttackPlan]:
@@ -86,10 +87,22 @@ class PlanAgent:
             wiki_section = "\n" + format_wiki_results(wiki_results) + "\n"
             log_plan_event(f"Wiki 命中 {len(wiki_results)} 条技术页面")
 
+        # findings.log 中的持久化发现（Attack Agent 通过 record_key_finding 写入）
+        recorded_section = ""
+        if self.shared_dir:
+            try:
+                from ..recorder import get_findings_summary
+                recorded = get_findings_summary(self.shared_dir)
+                if recorded:
+                    recorded_section = "\n# Agent 实时记录的关键发现\n" + recorded + "\n"
+            except Exception:
+                pass
+
         user_message = f"""# 目标信息
 {target_summary}
 {kb_section}
 {wiki_section}
+{recorded_section}
 # 已有发现
 {findings_summary}
 

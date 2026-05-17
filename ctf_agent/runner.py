@@ -81,7 +81,8 @@ class Runner:
         )
 
         # 子组件
-        self.plan_agent = PlanAgent(self.llm, self.challenge_id)
+        logs_dir = str(self.config.paths.logs_dir)
+        self.plan_agent = PlanAgent(self.llm, self.challenge_id, shared_dir=logs_dir)
         self.quick_check = QuickCheckAgent(self.llm, self.challenge_id)
 
         # 状态
@@ -160,7 +161,9 @@ class Runner:
             for r in results:
                 self.results.append(r)
                 self.ctx.agent_results.append(r)
-                new_findings.extend(r.findings)
+                for f in r.findings:
+                    self.ctx.add_finding(f)
+                    new_findings.append(f)
 
                 if r.flag:
                     log_finding_event(f"Flag 已找到!", r.flag)
