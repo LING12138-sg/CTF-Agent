@@ -35,18 +35,29 @@ def create_executor_server(
 
     # ── 注册工具 ──
 
-    @mcp.tool(description="执行 shell 命令并返回输出（支持管道、重定向等）")
+    @mcp.tool(
+        description=(
+            "执行 shell 命令或 Python 脚本（通过 Kali Docker 沙箱）。"
+            "language=shell(默认): shell 命令，支持管道/重定向。"
+            "language=python: Python 脚本，自动注入工作目录到 os.environ['WORK_DIR'] 和 os.chdir()。"
+        )
+    )
     async def bash(
         command: str,
         timeout: int = 60,
+        language: str = "shell",
     ) -> str:
-        """Execute a shell command
+        """Execute a command in the Docker sandbox
 
         Args:
-            command: The shell command to execute
+            command: shell 命令或 Python 代码
             timeout: Timeout in seconds (default 60)
+            language: 执行模式 — shell（默认）或 python
         """
-        return await tools.bash(command, timeout=timeout)
+        return await tools.bash(
+            command, timeout=timeout,
+            is_python=language.lower() == "python",
+        )
 
     @mcp.tool(description="获取 URL 的文本内容")
     async def web_fetch(

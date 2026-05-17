@@ -148,6 +148,13 @@ class Runner:
             # Step 2: Attack Agent 并行执行（赛马）
             results = await self._race_attackers(plans)
 
+            # 赛后更新计划状态：成功 → CONFIRMED，失败/超时 → REJECTED
+            for r in results:
+                for plan in self.ctx.plans:
+                    if plan.id == r.plan_id:
+                        plan.status = PlanStatus.CONFIRMED if r.status == AgentStatus.FOUND_FLAG else PlanStatus.REJECTED
+                        break
+
             # Step 3: 收集发现
             new_findings: List[Finding] = []
             for r in results:

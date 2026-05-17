@@ -124,6 +124,12 @@ class AttackAgent(BaseAgent):
 {target_info.url} | IP: {target_info.ip} | 端口: {target_info.ports}
 {self._build_tech_guidance()}
 
+## 执行环境
+你在 Kali Linux Docker 沙箱中运行，预装全套渗透测试工具（sqlmap、nmap、ffuf、nuclei、hydra 等）。
+命令执行必须使用 `mcp__ctf-executor__bash` 工具（SDK 内置 Bash 不可用），该工具自动在 Kali 容器内执行。
+漏洞库路径：/opt/tools/vulhub/（含数百个 CVE 的 PoC）
+nuclei 模板：/root/.local/nuclei-templates/
+
 ## 攻击计划
 标题: {self.plan.title}
 假设: {self.plan.hypothesis}
@@ -137,6 +143,7 @@ class AttackAgent(BaseAgent):
 4. 全部失败时，设置 success=false 并在 blocked_reason 中说明原因
 5. 重要发现用 record_key_finding 记录
 6. 每条新发现请在最终结构化输出的 findings 数组中描述
+7. **已知漏洞类型优先用专用工具**：SQL 注入→sqlmap(language=shell)、命令注入→commix(language=shell)、路径扫描→ffuf(language=shell)。Python 脚本用 language=python 模式执行
 
 ## 当前题目路径
 题目标识: {self.ctx.challenge_id}

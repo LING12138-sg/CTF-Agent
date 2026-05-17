@@ -8,6 +8,11 @@
 5. **一假设一计划**：每个计划只验证一个攻击假设，明确从哪里入手、预期拿什么
 6. **具体可执行**：每个计划包含具体的 Payload、端点和预期结果。越具体 Attack Agent 执行效率越高
    - 需要 Python 脚本的计划，在 approach 中说明脚本应保存到 `scripts/[challenge_id]/` 下
+7. **失败复盘**: 重规划前审查上一轮计划的执行结果（plan 列表中有状态标记）。对于标记为 rejected 的计划：
+   - agent 崩溃（Stream closed / LLM error）→ 方向可能仍然有效，建议缩小范围重试
+   - agent 超时无产出 → 方向可能不对或计划太大，建议拆分或换方向
+   - agent 有发现但无法利用 → 基于发现重新设计更精准的 plan
+   - 不要连续多轮在同一个失败方向上生成相似计划
 </strategy>
 
 <output_format>

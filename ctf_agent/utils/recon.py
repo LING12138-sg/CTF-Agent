@@ -80,8 +80,8 @@ _SERVICE_DB_HINTS = {
 async def nmap_scan(
     target: str,
     *,
-    timeout: int = 120,
-    args: str = "-sV -sC -O --max-retries 2 --min-rate 500",
+    timeout: int = 300,
+    args: str = "-sV -O --max-retries 2 --min-rate 500",
 ) -> Dict[str, Any]:
     """通过沙箱执行 nmap 扫描并解析结果
 

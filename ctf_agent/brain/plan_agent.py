@@ -28,7 +28,7 @@ from ..knowledge import (
 )
 from ..llm.schemas import PLANS_OUTPUT_SCHEMA
 from ..types import (
-    AttackPlan, ChallengeContext, Finding, FindingType,
+    AgentStatus, AttackPlan, ChallengeContext, Finding, FindingType,
     PlanStatus, Severity, TargetInfo,
 )
 from .prompts import get_brain_prompt
@@ -202,6 +202,20 @@ class PlanAgent:
         if has_high_confidence:
             return {"action": "continue", "reason": "高置信度发现，Attack Agent 继续深入"}
 
+        # 检查上轮 Agent 是否全部执行失败（崩溃/超时/无发现）
+        if ctx.agent_results:
+            # 找出本轮的 agent results（plan_id 在现有 plans 中且有对应）
+            plan_ids = {p.id for p in ctx.plans}
+            round_results = [r for r in ctx.agent_results if r.plan_id in plan_ids]
+            # 如果本轮有 2+ 个 agent 且全部失败 → 执行层出问题，强制重规划
+            if len(round_results) >= 2 and all(
+                r.status == AgentStatus.FAILED for r in round_results[-3:]
+            ):
+                reasons = "; ".join(
+                    f"{r.agent_id}: {r.error or '超时'}" for r in round_results[-3:]
+                )
+                return {"action": "replan", "reason": f"本轮 Agent 全部执行失败: {reasons}"}
+
         # 如果还有很多待执行计划，继续
         active_count = len(ctx.get_active_plans())
         if active_count > 0:
@@ -242,12 +256,24 @@ class PlanAgent:
         return "\n".join(lines)
 
     def _build_existing_plans_summary(self, ctx: ChallengeContext) -> str:
-        """构建已有计划摘要"""
+        """构建已有计划摘要（含执行结果）"""
         if not ctx.plans:
             return "暂无计划"
         lines = []
         for p in ctx.plans:
-            lines.append(f"- [{p.status.value}] {p.id}: {p.title}")
+            line = f"- [{p.status.value}] {p.id}: {p.title}"
+            # 找到对应的 agent result，拼接执行结果
+            for r in ctx.agent_results:
+                if r.plan_id == p.id:
+                    if r.status == AgentStatus.FOUND_FLAG:
+                        line += " ✅ 已找到 Flag"
+                    elif r.status == AgentStatus.FAILED:
+                        reason = r.error or "执行超时"
+                        if r.findings:
+                            reason += f"（有 {len(r.findings)} 个发现但未利用）"
+                        line += f" ❌ {reason}"
+                    break
+            lines.append(line)
         return "\n".join(lines) if lines else "暂无计划"
 
     def _parse_plans_from_data(self, data: List[Dict], ctx: ChallengeContext) -> List[AttackPlan]:

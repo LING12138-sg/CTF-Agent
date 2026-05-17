@@ -10,8 +10,10 @@ Executor Tool Implementations
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -51,13 +53,17 @@ async def bash(
     command: str,
     timeout: int = 60,
     cwd: Optional[str] = None,
+    is_python: bool = False,
+    workdir: Optional[str] = None,
 ) -> str:
-    """通过沙箱执行 shell 命令并返回输出
+    """通过沙箱执行 shell 命令或 Python 脚本并返回输出
 
     Args:
-        command: shell 命令
+        command: shell 命令 或 Python 代码（is_python=True 时）
         timeout: 超时秒数
-        cwd: 工作目录
+        cwd: 工作目录（兼容旧接口）
+        is_python: True 时以 Python 脚本执行 command（base64 pipe + workdir 注入）
+        workdir: Python 模式的工作目录（注入到脚本中）
 
     Returns:
         命令输出（stdout + stderr）
@@ -71,16 +77,60 @@ async def bash(
     except Exception as e:
         return f"[SANDBOX_ERROR] 沙箱初始化失败: {e}"
 
-    # 在线程中执行同步 execute()，不阻塞事件循环
+    _cwd = cwd or os.getcwd()
+
+    # Python 模式：base64 pipe 执行（避免 Docker/Host 文件系统隔离问题）
+    if is_python:
+        try:
+            compile(command, "<poc>", "exec")
+        except SyntaxError as e:
+            return f"[SYNTAX ERROR] 第 {e.lineno} 行: {e.msg}"
+
+        _workdir = workdir or _cwd
+        wrapper = (
+            "import os\n"
+            f"os.chdir({json.dumps(_workdir)})\n"
+            f"os.environ['WORK_DIR'] = {json.dumps(_workdir)}\n"
+        )
+        full_code = wrapper + command
+
+        # 存档 PoC（写 scripts/ 目录，该目录在 Docker 中可见）
+        try:
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            scripts_dir = Path(_cwd) / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            (scripts_dir / f"poc_{ts}.py").write_text(full_code, encoding="utf-8")
+        except Exception:
+            pass
+
+        # base64 pipe 执行（避免 temp file 跨容器路径映射问题）
+        import base64
+        encoded = base64.b64encode(full_code.encode()).decode()
+        exec_cmd = f"echo {encoded} | base64 -d | python3"
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: executor.execute(exec_cmd, timeout=timeout, caller="executor_tools[python]"),
+        )
+
+        parts = []
+        if result.stdout:
+            parts.append(result.stdout[:20000])
+        if result.stderr:
+            parts.append(f"\n[STDERR]\n{result.stderr[:5000]}")
+        if result.timed_out:
+            parts.append(f"\n[TIMEOUT] 命令执行超时 ({timeout}s)")
+        if not parts:
+            return "(无输出)"
+        return "".join(parts)
+
+    # Shell 模式：直接执行
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
-        lambda: executor.execute(
-            command,
-            timeout=timeout,
-            workdir=cwd or os.getcwd(),
-            caller="executor_tools",
-        ),
+        lambda: executor.execute(command, timeout=timeout, workdir=_cwd, caller="executor_tools"),
     )
 
     parts = []

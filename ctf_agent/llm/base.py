@@ -383,6 +383,11 @@ class LLMBase:
             from ..executor import executor_mcp_config
             mcp_servers.update(executor_mcp_config(self._executor_server))
 
+            # 禁用 SDK 内置 Bash，所有命令执行走 executor MCP（必经 Docker 沙箱）
+            current_disallowed = set(kwargs.get("disallowed_tools") or [])
+            current_disallowed.add("Bash")
+            kwargs["disallowed_tools"] = list(current_disallowed)
+
         if mcp_servers:
             kwargs["mcp_servers"] = mcp_servers
 
