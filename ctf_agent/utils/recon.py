@@ -321,21 +321,44 @@ def enrich_from_whatweb(
 ) -> None:
     """用 whatweb 扫描结果丰富 TechStack
 
-    whatweb 比 nmap -sV 更适合 tcpwrapped 场景，
-    因为它通过 HTTP 请求解析指纹，不依赖 TCP 连接握手。
+    whatweb 输出格式: PluginName[value1][value2]...
+    很多有用信息存在值里而非插件名里（如 HTTPServer[openresty][1.21.4.1]）。
+    此函数同时匹配插件名和 all_values 中的每个值。
     """
     if whatweb_result.get("error") or not whatweb_result.get("plugins"):
         return
 
     plugins = whatweb_result["plugins"]
-    plugin_names = {p["name"].lower() for p in plugins}
-    name_to_plugin: dict = {}
+
+    # 构建扁平关键词集合 + 版本映射
+    # 版本映射以每个 token 为 key，值取插件值列表中的下一个元素
+    all_tokens: set[str] = set()
+    name_to_version: dict[str, str] = {}
     for p in plugins:
-        name_to_plugin[p["name"].lower()] = p
+        name_lower = p["name"].lower()
+        all_tokens.add(name_lower)
+        values: list[str] = p.get("all_values", [])
+        for i, v in enumerate(values):
+            v_lower = v.lower()
+            all_tokens.add(v_lower)
+            if v_lower not in name_to_version:
+                if i + 1 < len(values):
+                    name_to_version[v_lower] = values[i + 1]
+                elif p["version"] and p["version"] != v:
+                    name_to_version[v_lower] = p["version"]
+            # 拆分带斜杠的值（如 PHP/7.4.33 → php）
+            for sep in ("/", " ", "-"):
+                if sep in v_lower:
+                    prefix = v_lower.split(sep, 1)[0]
+                    all_tokens.add(prefix)
+                    if prefix not in name_to_version:
+                        name_to_version[prefix] = v
+        if name_lower not in name_to_version and p["version"]:
+            name_to_version[name_lower] = p["version"]
 
     _SERVER_NAMES = frozenset({
         "openresty", "nginx", "apache", "apache httpd", "httpd", "iis",
-        "tomcat", "caddy", "lighttpd",
+        "tomcat", "caddy", "lighttpd", "tengine",
     })
     _LANG_NAMES = frozenset({
         "php", "python", "java", "perl", "ruby", "asp.net",
@@ -345,33 +368,57 @@ def enrich_from_whatweb(
         "spring", "struts", "thinkphp", "laravel", "yii",
         "wordpress", "drupal", "joomla",
     })
+    _DB_NAMES = frozenset({
+        "mysql", "postgresql", "mongodb", "redis", "sqlite",
+        "microsoft sql server", "oracle",
+    })
 
-    # Server
-    for name in _SERVER_NAMES & plugin_names:
-        p = name_to_plugin[name]
-        tag = f"{p['name']} {p['version']}".strip()
-        if not tech_stack.server:
+    def _best_version(token: str) -> str:
+        return name_to_version.get(token.lower(), "")
+
+    # Server — 同时匹配 name 和 all_values
+    for token in _SERVER_NAMES:
+        if token in all_tokens and not tech_stack.server:
+            ver = _best_version(token)
+            tag = f"{token} {ver}".strip()
             tech_stack.server = tag
             log_system_event(f"[WhatWeb] 识别 Server: {tech_stack.server}")
-        if tag not in tech_stack.middleware:
-            tech_stack.middleware.append(tag)
+            if tag not in tech_stack.middleware:
+                tech_stack.middleware.append(tag)
+            break  # 取第一个命中的
 
+    _LANG_DISPLAY: dict[str, str] = {"php": "PHP", "asp.net": "ASP.NET"}
     # Language
-    for name in _LANG_NAMES & plugin_names:
-        p = name_to_plugin[name]
-        if not tech_stack.language:
-            tech_stack.language = p["name"]
+    for token in _LANG_NAMES:
+        if token in all_tokens and not tech_stack.language:
+            tech_stack.language = _LANG_DISPLAY.get(token, token.title())
             log_system_event(f"[WhatWeb] 识别语言: {tech_stack.language}")
+            break
 
     # Framework / CMS
-    for name in _FRAMEWORK_NAMES & plugin_names:
-        p = name_to_plugin[name]
-        tag = f"{p['name']} {p['version']}".strip()
-        if not tech_stack.framework:
-            tech_stack.framework = tag
+    for token in _FRAMEWORK_NAMES:
+        if token in all_tokens and not tech_stack.framework:
+            ver = _best_version(token)
+            tech_stack.framework = f"{token} {ver}".strip()
             log_system_event(f"[WhatWeb] 识别框架: {tech_stack.framework}")
+            break
 
-    log_system_event(f"[WhatWeb] 组件列表: {[p['name'] for p in plugins]}")
+    # Database
+    for token in _DB_NAMES:
+        if token in all_tokens and not tech_stack.database:
+            tech_stack.database = token
+            log_system_event(f"[WhatWeb] 识别数据库: {tech_stack.database}")
+            break
+
+    # 日志：打印完整键值对
+    plugin_kv = []
+    for p in plugins:
+        vals = "][".join(p.get("all_values", []))
+        if vals:
+            plugin_kv.append(f"{p['name']}[{vals}]")
+        else:
+            plugin_kv.append(p['name'])
+    log_system_event(f"[WhatWeb] {', '.join(plugin_kv)}")
 
 
 def enrich_tech_stack(

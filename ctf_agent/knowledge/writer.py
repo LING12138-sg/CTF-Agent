@@ -7,8 +7,10 @@ Runner 在 Pipeline 结束后调用，自动把解题经验写入 knowledge/。
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 
 from ..common import log_system_event
@@ -44,18 +46,71 @@ def write_experience(ctx: ChallengeContext, result: Dict) -> None:
     for r in ctx.agent_results:
         if r.summary and r.summary.startswith("放弃"):
             continue
+
+        # 找到对应的 plan，注入攻击方法作为上下文
+        plan = next((p for p in ctx.plans if p.id == r.plan_id), None)
+        if plan:
+            chain_parts.append(f"## 攻击计划: {plan.title}")
+            chain_parts.append(f"方法: {plan.approach}")
+
+        # Agent 总结
         if r.summary:
-            chain_parts.append(f"- [{r.agent_id}] {r.summary}")
+            chain_parts.append(f"\n### 执行总结 [{r.agent_id}]")
+            chain_parts.append(r.summary)
+
+        # Agent 完整响应（精简为 3000 字符）
+        if r.response_text:
+            # 提取工具调用和关键输出，跳过思考过程
+            lines = []
+            for line in r.response_text.split("\n"):
+                stripped = line.strip()
+                if stripped and not stripped.startswith("--- THINK"):
+                    lines.append(stripped)
+            clean_text = "\n".join(lines)
+            if len(clean_text) > 3000:
+                clean_text = clean_text[:3000] + "\n...(截断)"
+            chain_parts.append(f"\n### 详细执行过程 [{r.agent_id}]")
+            chain_parts.append(clean_text)
+
+        # 发现的证据（不截断）
         for f in r.findings:
             if f.evidence:
-                chain_parts.append(f"  - {f.title}: {f.evidence[:200]}")
+                chain_parts.append(f"\n- **{f.title}**: {f.evidence[:2000]}")
 
     # 构建 key_commands
     cmd_parts: list[str] = []
     for r in ctx.agent_results:
         for f in r.findings:
-            if f.evidence and ("curl" in f.evidence or "sqlmap" in f.evidence or "python" in f.evidence):
-                cmd_parts.append(f"# {f.title}\n{f.evidence}")
+            if f.evidence and any(kw in f.evidence.lower() for kw in
+                                  ("curl", "sqlmap", "python", "nmap", "ffuf",
+                                   "nuclei", "hydra", "gobuster", "commix")):
+                cmd_parts.append(f"# {f.title}\n{f.evidence[:2000]}")
+        # 从 response_text 提取工具调用标记 + 命令描述行
+        if r.response_text:
+            tool_names: set[str] = set()
+            cmd_lines: list[str] = []
+            for line in r.response_text.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("[TOOL_CALL:"):
+                    name = stripped[len("[TOOL_CALL:"):].rstrip("]").strip()
+                    tool_names.add(name)
+                    continue
+                # 检测 LLM 文本块中描述的命令（含常见 Kali 工具名）
+                lower = stripped.lower()
+                for kw in ("sqlmap", "curl ", "nmap", "ffuf", "nuclei", "hydra",
+                           "python3", "gobuster", "commix", "dirb", "john ",
+                           "hashcat", "steghide", "binwalk", "jwt_tool"):
+                    if kw in lower and not stripped.startswith("[") and 15 < len(stripped) < 500:
+                        cmd_lines.append(stripped[:300])
+                        break
+            if cmd_lines:
+                cmd_parts.append("# 攻击命令\n" + "\n".join(cmd_lines[:15]))
+            if tool_names:
+                cmd_parts.append(f"# 使用工具: {', '.join(sorted(tool_names))}")
+        # 从 Agent 日志文件提取实际执行的命令
+        log_cmds = _extract_cmds_from_log(r.agent_id, r.plan_id)
+        if log_cmds:
+            cmd_parts.append("# 实际执行命令\n" + "\n".join(log_cmds[:20]))
 
     # 构建已放弃方向
     abandon_parts: list[str] = []
@@ -87,6 +142,32 @@ def write_experience(ctx: ChallengeContext, result: Dict) -> None:
         f"知识条目已写入",
         f"challenge_id={ctx.challenge_id} solved={solved} tags={tags}",
     )
+
+
+def _extract_cmds_from_log(agent_id: str, plan_id: str) -> list[str]:
+    """从 Agent 日志文件提取实际执行的命令（>>> [TOOL:...] 行）"""
+    log_dir = Path(__file__).resolve().parent.parent.parent / "shared" / "logs"
+    log_file = log_dir / f"{agent_id}_{plan_id}.log"
+    if not log_file.exists():
+        return []
+    try:
+        cmds: list[str] = []
+        with open(log_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if ">>> [TOOL:" in line:
+                    # 格式: >>> [TOOL:name] {"command": "...", "language": "..."}
+                    try:
+                        json_str = line.split("] ", 1)[1] if "] " in line else ""
+                        if json_str:
+                            inp = json.loads(json_str)
+                            cmd = inp.get("command", "")
+                            if cmd:
+                                cmds.append(cmd[:500])
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+        return cmds
+    except OSError:
+        return []
 
 
 def _build_tags(ctx: ChallengeContext) -> list:

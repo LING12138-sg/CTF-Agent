@@ -126,7 +126,8 @@ class AttackAgent(BaseAgent):
 
 ## 执行环境
 你在 Kali Linux Docker 沙箱中运行，预装全套渗透测试工具（sqlmap、nmap、ffuf、nuclei、hydra 等）。
-命令执行必须使用 `mcp__ctf-executor__bash` 工具（SDK 内置 Bash 不可用），该工具自动在 Kali 容器内执行。
+命令执行使用 `mcp__ctf-executor__bash`，HTTP 请求使用 `mcp__ctf-executor__web_fetch`，联网搜索使用 `mcp__ctf-executor__web_search`。
+SDK 内置的 Bash / WebFetch / WebSearch 已禁用，所有操作必须走 mcp__ctf-executor__* 系列工具。
 漏洞库路径：/opt/tools/vulhub/（含数百个 CVE 的 PoC）
 nuclei 模板：/root/.local/nuclei-templates/
 
@@ -229,6 +230,7 @@ Writeup: wp/{self.ctx.challenge_id}/
                 steps_taken=1,
                 started_at=now_str(),
                 finished_at=now_str(),
+                response_text=response[:5000],
             )
 
         if gave_up:
@@ -243,6 +245,7 @@ Writeup: wp/{self.ctx.challenge_id}/
                 steps_taken=1,
                 started_at=now_str(),
                 finished_at=now_str(),
+                response_text=response[:5000],
             )
 
         return AgentResult(
@@ -254,6 +257,7 @@ Writeup: wp/{self.ctx.challenge_id}/
             steps_taken=1,
             started_at=now_str(),
             finished_at=now_str(),
+            response_text=response[:5000],
         )
 
     @staticmethod

@@ -176,6 +176,7 @@ class AgentResult:
     summary: str = ""
     steps_taken: int = 0
     error: str = ""
+    response_text: str = ""  # Agent 完整响应文本（用于 writeup 生成）
     started_at: str = field(default_factory=_now_bjt)
     finished_at: str = ""
 
@@ -273,6 +274,7 @@ class ChallengeContext:
                 summary=r_data.get("summary", ""),
                 steps_taken=r_data.get("steps_taken", 0),
                 error=r_data.get("error", ""),
+                response_text=r_data.get("response_text", ""),
                 started_at=r_data.get("started_at", ""),
                 finished_at=r_data.get("finished_at", ""),
             )
