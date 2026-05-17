@@ -113,7 +113,7 @@ async def nmap_scan(
 
     log_system_event(f"开始 nmap 扫描: {target} ({args})")
 
-    cmd = f"nmap {args} -oX - {target} 2>/dev/null"
+    cmd = f"nmap {args} -oX - {target} 2>&1"
     try:
         result = await loop.run_in_executor(
             None,
@@ -225,7 +225,7 @@ async def whatweb_scan(
     Args:
         target: 目标 URL（如 http://host:port/path）
         timeout: 超时秒数
-        aggressive: 是否启用 --aggressive 模式（更多请求，更准）
+        aggressive: 是否启用 -a 3 模式（更多请求，更准）
 
     Returns:
         plugins / raw_output / error
@@ -245,8 +245,8 @@ async def whatweb_scan(
         log_system_event(f"whatweb 检查失败: {e}", level=logging.WARNING)
         return {"plugins": [], "raw_output": "", "error": f"whatweb check failed: {e}"}
 
-    args = "--aggressive" if aggressive else ""
-    cmd = f"whatweb {args} '{target}' 2>/dev/null".strip()
+    args = "-a 3" if aggressive else ""
+    cmd = f"whatweb {args} '{target}' 2>&1".strip()
 
     log_system_event(f"开始 whatweb 扫描: {target}" + (" (aggressive)" if aggressive else ""))
 

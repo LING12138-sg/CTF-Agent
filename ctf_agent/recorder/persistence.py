@@ -210,6 +210,7 @@ def _sync_to_progress_md(finding: Dict[str, Any], shared_dir: str):
     kind = finding.get("kind", "")
     status = finding.get("status", "")
     is_dead = kind == "dead_end" or status == "dead_end"
+    title = finding.get("title", "")
 
     content = ""
     if os.path.exists(path):
