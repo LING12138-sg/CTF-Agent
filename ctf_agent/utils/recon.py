@@ -280,6 +280,9 @@ def _parse_whatweb_output(raw: str) -> List[Dict[str, str]]:
     Returns:
         [{name, version, all_values}, ...]
     """
+    # 去掉 ANSI 彩色转义码（whatweb 默认带颜色输出）
+    raw = re.sub(r'\x1b\[[0-9;]*m', '', raw)
+
     # 提取插件部分（在状态码之后）
     match = re.search(r'\]\s+(.+)', raw)
     if not match:
